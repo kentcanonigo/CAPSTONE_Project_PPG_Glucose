@@ -20,6 +20,29 @@ def main():
 
     print(f"Found {len(matched_pairs)} matched signal-label pairs.")
 
+    SAMPLING_FREQ = 2175  # Hz
+
+    # Print duration for each matched signal file
+    last_person_id = None
+    for signal_file, label_file in matched_pairs:
+        # Extract person ID from filename (e.g., signal_01_0001.csv -> 01)
+        person_id = signal_file.split('_')[1]
+        if last_person_id is not None and person_id != last_person_id:
+            print()  # Print a newline when moving to a new person
+        last_person_id = person_id
+        signal_path = os.path.join(RAW_DATA_DIR, signal_file)
+        label_path = os.path.join(LABELS_DIR, label_file)
+        signal_df = pd.read_csv(signal_path, header=None)
+        label_df = pd.read_csv(label_path, header=None)
+        num_samples = len(signal_df)
+        duration_sec = num_samples / SAMPLING_FREQ
+        # Try to get the blood glucose value (skip header if present)
+        if label_df.shape[0] > 1:
+            blood_glucose = label_df.iloc[1, 3]
+        else:
+            blood_glucose = label_df.iloc[0, 3]
+        print(f"{signal_file}: {num_samples} samples, {duration_sec:.2f} seconds, Blood Glucose: {blood_glucose} mg/dL")
+
     # Load one pair as a test
     if matched_pairs:
         test_signal_file, test_label_file = matched_pairs[0]
