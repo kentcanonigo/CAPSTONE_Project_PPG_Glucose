@@ -1,10 +1,28 @@
 ﻿import os
 import pandas as pd
+import numpy as np
+from sklearn.model_selection import GroupKFold
 
 # Paths to data folders
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RAW_DATA_DIR = os.path.join(SCRIPT_DIR, 'PPG_Dataset', 'RawData')
 LABELS_DIR = os.path.join(SCRIPT_DIR, 'PPG_Dataset', 'Labels')
+
+def extract_person_id(signal_file):
+    """Extracts the person ID from a signal filename like 'signal_01_0001.csv' -> '01'"""
+    return signal_file.split('_')[1]
+
+def group_aware_split(matched_pairs, n_splits=5):
+    """Performs group-aware splitting using GroupKFold."""
+    groups = [extract_person_id(signal_file) for signal_file, _ in matched_pairs]
+    X = np.arange(len(matched_pairs))  # Dummy X, just indices
+    y = np.zeros(len(matched_pairs))   # Dummy y, not used
+    gkf = GroupKFold(n_splits=n_splits)
+    for fold, (train_idx, test_idx) in enumerate(gkf.split(X, y, groups)):
+        print(f"Fold {fold+1}:")
+        print(f"  Train participants: {sorted(set([groups[i] for i in train_idx]))}")
+        print(f"  Test participants: {sorted(set([groups[i] for i in test_idx]))}\n")
+    return
 
 def main():
     # List all signal and label CSV files
@@ -19,6 +37,9 @@ def main():
             matched_pairs.append((signal_file, base_name))
 
     print(f"Found {len(matched_pairs)} matched signal-label pairs.")
+
+    # Group-aware split demonstration
+    group_aware_split(matched_pairs, n_splits=5)
 
     SAMPLING_FREQ = 2175  # Hz
 
