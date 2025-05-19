@@ -2,8 +2,9 @@
 import pandas as pd
 
 # Paths to data folders
-RAW_DATA_DIR = 'PPG_Dataset/RawData'
-LABELS_DIR = 'PPG_Dataset/Labels'
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+RAW_DATA_DIR = os.path.join(SCRIPT_DIR, 'PPG_Dataset', 'RawData')
+LABELS_DIR = os.path.join(SCRIPT_DIR, 'PPG_Dataset', 'Labels')
 
 def main():
     # List all signal and label CSV files
