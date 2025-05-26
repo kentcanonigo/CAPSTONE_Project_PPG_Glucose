@@ -7,7 +7,7 @@ import os
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__)) # Gets the directory of config.py
 
 # --- Data Paths ---
-BASE_DATA_PATH = os.path.join(PROJECT_ROOT, "PPG_Dataset")
+BASE_DATA_PATH = os.path.join(PROJECT_ROOT, "..\PPG_Dataset")
 RAW_DATA_FOLDER = os.path.join(BASE_DATA_PATH, "RawData")
 LABELS_FILE = os.path.join(BASE_DATA_PATH, "Labels", "Total.csv")
 
