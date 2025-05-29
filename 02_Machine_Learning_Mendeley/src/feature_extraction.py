@@ -8,7 +8,7 @@ from scipy.signal import savgol_filter
 
 # Folder containing raw PPG .csv files
 DATA_DIR = "PPG_Dataset\RawDatainCSV"
-SAMPLES_PER_SEGMENT = 2175 * 5  # 5 seconds × 2175 Hz = 10,875 samples per segment
+SAMPLES_PER_SEGMENT = 2175 * 5  # 5 seconds x 2175 Hz = 10,875 samples per segment
 
 # Placeholder for all feature rows
 all_feature_rows = []
@@ -41,7 +41,7 @@ def extract_features(signal_segment, fs=2175):
     features['skewness'] = skew(signal_segment)
     features['kurtosis'] = kurtosis(signal_segment)
 
-    # FFT band power (0.5–5 Hz)
+    # FFT band power (0.5-5 Hz)
     freqs, psd = welch(signal_segment, fs=fs)
     band_mask = (freqs >= 0.5) & (freqs <= 5)
     features['band_power_0.5_5Hz'] = np.trapezoid(psd[band_mask], freqs[band_mask])
@@ -65,7 +65,7 @@ for filename in os.listdir(DATA_DIR):
         # Optional: smooth the signal to reduce noise before feature extraction
         smoothed = savgol_filter(raw_signal, window_length=51, polyorder=3)
 
-        # Each .csv contains a 10-second PPG recording at 2175 Hz → ~21,750 samples
+        # Each .csv contains a 10-second PPG recording at 2175 Hz ~21,750 samples
         # Since we use 5-second analysis windows (10,875 samples), we divide into 2 segments
         num_segments = len(smoothed) // SAMPLES_PER_SEGMENT  # Expected: 2 segments per file
 
