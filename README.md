@@ -1,37 +1,28 @@
-# PPG Glucose Estimation - Model Training from Dataset
+# Non-Invasive Glucose Estimation using Multi-Finger PPG
 
-This project focuses on training and evaluating a machine learning model to estimate blood glucose levels from an existing dataset of PPG (photoplethysmography) signals.
+## Capstone Project - Department of Computer Engineering, Cebu Technological University - Main Campus
 
-## Repository Overview
+This repository contains all components for the capstone project titled: "Comparative Analysis of Single-Site and Multi-Finger PPG Systems for Non-Invasive Glucose Estimation." The project involves developing a custom multi-finger PPG data acquisition system, training machine learning models on existing and newly collected data, and evaluating the efficacy of multi-finger approaches compared to single-site PPG for glucose estimation.
 
-This repository contains the Python scripts necessary to:
+## Project Components
 
-1.  Load and preprocess PPG signals and their corresponding glucose labels.
-2.  Extract a comprehensive set of physiological features from the PPG data.
-3.  Train a LightGBM machine learning model for glucose estimation.
-4.  Evaluate the model's performance.
+This project is organized into several key functional areas:
 
-## Files
+- **`01_Data_Collection_Tool/`**: Contains the Python Tkinter application for data entry and device interfacing, along with the microcontroller firmware (ESP32/Arduino) for acquiring PPG signals from participants.
 
-- **`PPG_Dataset/`**: Contains the input dataset.
-  - `Labels/Total.csv`: Subject IDs and their glucose levels.
-  - `RawData/signal_*.csv`: Raw PPG signal files.
-- **`models/`**: Target directory for saved trained models.
-- **`config.py`**: Central configuration for file paths, signal processing parameters (sampling rates, filter settings), and model hyperparameters. **Adjust paths here first.**
-- **`data_loader.py`**: Scripts for loading the raw signal data and the glucose labels.
-- **`preprocessing.py`**: Contains functions for signal preprocessing, including downsampling, filtering (Butterworth bandpass, Savitzky-Golay), and segmentation into windows.
-- **`feature_extraction.py`**: Implements the extraction of various morphological, interval, statistical, and frequency-domain features from the processed PPG segments.
-- **`model_trainer.py`**: Manages the machine learning workflow: splits data, trains the LightGBM model, evaluates it using metrics like mARD, RMSE, MAE, and saves the trained model.
-- **`main.py`**: The main executable script that orchestrates the entire pipeline from data loading to model training and saving.
+- **`02_Machine_Learning_Mendeley/`**: Dedicated to the machine learning pipeline (data loading, preprocessing, feature extraction, LightGBM model training, and evaluation) developed using the existing public Mendeley PPG dataset to establish a single-site baseline model.
 
-## How to Run
+- **`03_Hardware_Interface_Development/`**: Houses all hardware design aspects, including schematics, component lists, and assembly notes for the custom multi-finger PPG acquisition device.
 
-1.  **Setup**:
-    - Ensure Python and required libraries are installed: `pandas`, `numpy`, `scipy`, `scikit-learn`, `lightgbm`.
-    - Verify that the `BASE_DATA_PATH` in `config.py` correctly points to your `PPG_Dataset` folder.
-2.  **Execute**:
-    - Run the main script from the project's root directory:
-      ```bash
-      python main.py
-      ```
-    - The script will process the data, train the model, print evaluation metrics, and save the trained model to the `models/` directory.
+- **`04_Collected_Data_Analysis/`**: Intended for storing the data collected by the custom system (`Collected_Data/` subfolder) and the scripts/notebooks for its processing, multi-finger fusion analysis, and performance evaluation against the baseline model or newly trained models.
+
+- **`docs/`**: Stores general project documentation such as the thesis manuscript, presentation slides, and research notes.
+
+## General Workflow
+
+1.  **Baseline Model Training**: Use components in `02_Machine_Learning_Mendeley/` to train a glucose estimation model on the existing dataset.
+2.  **Hardware & Firmware Setup**: Assemble the device based on `03_Hardware_Interface_Development/` and flash firmware from `01_Data_Collection_Tool/firmware/`.
+3.  **Custom Data Collection**: Utilize the Tkinter app in `01_Data_Collection_Tool/app/` to collect new multi-finger PPG data.
+4.  **Analysis & Comparison**: Process and analyze the newly collected data using tools in `04_Collected_Data_Analysis/` to compare single-finger and multi-finger performance.
+
+Refer to specific `README.md` files within each main directory for more detailed instructions.
