@@ -1,0 +1,4 @@
+Timestamp,ID,Sample_Num,Gender,Age,Height_cm,Weight_kg,Glucose_mgdL
+2025-06-02 21:50:16,1,1,Male,21,170.0,70.0,100.0
+2025-06-02 21:53:28,1,2,Male,21,170.0,70.0,100.0
+2025-06-03 01:04:32,2,1,Male,22,169.0,67.0,120.0
