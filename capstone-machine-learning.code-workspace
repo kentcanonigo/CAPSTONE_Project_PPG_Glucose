@@ -1,10 +1,7 @@
 {
-	"folders": [
-		{
-			"path": "."
-		},
-		{
-			"path": "01_Data_Collection_Tool/firmware/AnalogSensorFirmware"
-		}
-	]
+    "folders": [
+        {
+            "path": "."
+        }
+    ]
 }
