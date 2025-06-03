@@ -11,6 +11,7 @@ from datetime import datetime
 import pandas as pd
 import random
 import math
+from playsound import playsound
 
 class PPGDataCollectorApp:
     def __init__(self, root_window, initial_geometry="650x900"):
@@ -44,6 +45,8 @@ class PPGDataCollectorApp:
         self._setup_gui() 
         self._load_history_data() 
 
+        self.app_dir = os.path.dirname(os.path.abspath(__file__))
+
         # Center the window just before making it visible
         self._center_window() 
         self.root.deiconify() # Make window visible now that it's centered
@@ -65,6 +68,23 @@ class PPGDataCollectorApp:
             y_coordinate = int((screen_height / 2) - (height / 2))
             
             self.root.geometry(f"{width}x{height}+{x_coordinate}+{y_coordinate}")
+
+    def _play_alert_sound(self):
+
+        sound_file_path = os.path.join(self.app_dir, "./assets/collection_done.wav")
+
+        try:
+            if os.path.exists(sound_file_path):
+                # Run playsound in a separate thread to avoid blocking the GUI
+                sound_thread = threading.Thread(target=playsound, args=(sound_file_path,), daemon=True)
+                sound_thread.start()
+                self._log_message("Played custom alert sound.")
+            else:
+                self._log_message(f"Alert sound file '{sound_file_name}' not found. Playing system bell.")
+                self.root.bell()
+        except Exception as e:
+            self._log_message(f"Error playing sound with playsound: {e}. Playing system bell.")
+            self.root.bell()
 
     def _create_directories(self):
         try:
@@ -422,6 +442,9 @@ class PPGDataCollectorApp:
         self.root.after(0, self._on_collection_finish)
 
     def _on_collection_finish(self):
+
+        self._play_alert_sound()
+
         is_sim_mode = self.simulation_mode.get()
         is_sim_effectively_connected = is_sim_mode and "Simulate Disconnect" == self.connect_button.cget("text")
         is_real_connected = (not is_sim_mode) and (self.serial_connection and self.serial_connection.is_open)
