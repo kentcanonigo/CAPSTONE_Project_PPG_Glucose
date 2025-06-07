@@ -1,102 +1,185 @@
-# preprocessing.py
+# 02_Machine_Learning_Mendeley/src/preprocessing.py
 
 import numpy as np
-from scipy.signal import resample, butter, filtfilt, savgol_filter
-import config
+from scipy.signal import butter, filtfilt, savgol_filter, resample
+import config # Imports parameters from your config.py
 
-def downsample_signal(raw_signal, original_fs, target_fs):
-    """Downsamples a signal from original_fs to target_fs."""
-    num_samples_original = len(raw_signal)
-    num_samples_target = int(num_samples_original * target_fs / original_fs)
-    if num_samples_target < 1 : # Ensure at least 1 sample after downsampling
-        print(f"Warning: Signal too short ({num_samples_original} samples) to downsample from {original_fs}Hz to {target_fs}Hz. Returning original.")
-        return raw_signal # Or handle as an error
-    downsampled_signal = resample(raw_signal, num_samples_target)
-    return downsampled_signal
-
-def apply_bandpass_filter(signal_data, lowcut, highcut, fs, order):
-    """Applies a Butterworth bandpass filter to the signal."""
-    nyquist_freq = 0.5 * fs
-    low = lowcut / nyquist_freq
-    high = highcut / nyquist_freq
-    # Ensure low and high are valid (0 < low < high < 1)
-    if not (0 < low < 1 and 0 < high < 1 and low < high):
-        print(f"Warning: Invalid filter critical frequencies ({low}, {high}) for Nyquist {nyquist_freq}. Signal length: {len(signal_data)}. Lowcut: {lowcut}, Highcut: {highcut}, FS: {fs}")
-        # Check if signal is too short for filtering or if cutoffs are bad
-        if len(signal_data) <= order * 3: # Heuristic, filtfilt needs signal longer than 3 * (max(len(a), len(b)) -1)
-             print("Signal too short for filtering. Returning original.")
-             return signal_data
-        # If frequencies are bad but signal okay, maybe skip filtering or use defaults
-        # For now, returning original if frequencies are bad to avoid crash.
-        return signal_data
-
+def apply_bandpass_filter(signal, lowcut, highcut, fs, order=2):
+    """
+    Applies a Butterworth bandpass filter to the signal.
+    
+    Args:
+        signal (np.ndarray): The input signal array.
+        lowcut (float): The low cut-off frequency.
+        highcut (float): The high cut-off frequency.
+        fs (int): The sampling frequency of the signal.
+        order (int): The order of the filter.
+        
+    Returns:
+        np.ndarray: The filtered signal.
+    """
+    nyquist = 0.5 * fs
+    low = lowcut / nyquist
+    high = highcut / nyquist
     b, a = butter(order, [low, high], btype='band')
-    if len(signal_data) <= max(len(b), len(a)) * 3 : # A more robust check for filtfilt
-        print(f"Warning: Signal length {len(signal_data)} is too short for designed filter (order {order}). Returning original.")
-        return signal_data
-    filtered_signal = filtfilt(b, a, signal_data)
+    filtered_signal = filtfilt(b, a, signal)
     return filtered_signal
 
-def apply_savgol_smoothing(signal_data, window_length, poly_order):
-    """Applies Savitzky-Golay smoothing to the signal."""
-    if window_length % 2 == 0: # window_length must be odd
-        window_length +=1
-    if len(signal_data) < window_length:
-        print(f"Warning: Signal length {len(signal_data)} is less than SavGol window {window_length}. Adjusting window or returning original.")
-        # Option: reduce window_length if possible, or return original
-        if len(signal_data) > poly_order : # Ensure window is at least poly_order + 1
-            window_length = max(poly_order + 1 + (poly_order+1)%2,3) # Smallest odd window > poly_order
-            if len(signal_data) < window_length:
-                 return signal_data # Still too short
-        else:
-            return signal_data # Too short for even smallest window
+def apply_savgol_smoothing(signal, window_length, polyorder):
+    """
+    Applies a Savitzky-Golay filter to smooth the signal.
+    
+    Args:
+        signal (np.ndarray): The input signal array.
+        window_length (int): The length of the filter window (must be odd).
+        polyorder (int): The order of the polynomial used to fit the samples.
+        
+    Returns:
+        np.ndarray: The smoothed signal.
+    """
+    # Ensure window_length is odd
+    if window_length % 2 == 0:
+        window_length += 1
+    return savgol_filter(signal, window_length, polyorder)
 
-    smoothed_signal = savgol_filter(signal_data, window_length, poly_order)
-    return smoothed_signal
-
-def segment_signal(processed_signal, samples_per_window):
-    """Segments the signal into fixed-length windows."""
-    num_segments = len(processed_signal) // samples_per_window
-    segments = []
-    for i in range(num_segments):
-        segment = processed_signal[i * samples_per_window : (i + 1) * samples_per_window]
-        if len(segment) == samples_per_window: # Ensure full segment
-            segments.append(segment)
+def segment_signal(signal, samples_per_window):
+    """
+    Segments the signal into non-overlapping windows of a fixed size.
+    
+    Args:
+        signal (np.ndarray): The input signal array.
+        samples_per_window (int): The number of samples in each segment.
+        
+    Returns:
+        list: A list of signal segments (each segment is a np.ndarray).
+    """
+    if signal is None or samples_per_window <= 0:
+        return []
+        
+    num_segments = len(signal) // samples_per_window
+    if num_segments == 0:
+        return []
+        
+    # Use a list comprehension to create the list of segments
+    segments = [
+        signal[i * samples_per_window : (i + 1) * samples_per_window]
+        for i in range(num_segments)
+    ]
     return segments
 
-def full_preprocess_pipeline(raw_signal):
-    """Runs the full preprocessing pipeline on a raw signal."""
-    if raw_signal is None or len(raw_signal) == 0:
-        return [] # Return empty list if signal is bad
-
-    # 1. Downsample
-    downsampled = downsample_signal(raw_signal, config.ORIGINAL_FS, config.TARGET_FS)
-    if len(downsampled) < config.SAMPLES_PER_WINDOW : # Check if signal is too short after downsampling
-        print(f"Signal too short after downsampling ({len(downsampled)} samples) for segmentation. Skipping.")
+def full_preprocess_pipeline(raw_signal, use_mendeley_fs=True, custom_fs=100):
+    """
+    Complete preprocessing pipeline for a raw PPG signal. This function is designed
+    to be flexible for both the original Mendeley dataset and custom datasets with
+    different sampling rates.
+    
+    Args:
+        raw_signal (np.ndarray): The input raw PPG signal array.
+        use_mendeley_fs (bool): If True, uses ORIGINAL_FS from config for downsampling.
+                                If False, uses the provided custom_fs.
+        custom_fs (int): The sampling rate of the custom device (e.g., 100 Hz).
+    
+    Returns:
+        list: A list of processed and segmented signal windows.
+    """
+    if raw_signal is None or raw_signal.size < 2:
         return []
 
-    # 2. Bandpass Filter
-    bandpassed = apply_bandpass_filter(downsampled, config.FILTER_LOWCUT, config.FILTER_HIGHCUT,
-                                       config.TARGET_FS, config.FILTER_ORDER)
-
-    # 3. Savitzky-Golay Smoothing
-    smoothed = apply_savgol_smoothing(bandpassed, config.SAVGOL_WINDOW, config.SAVGOL_POLYORDER)
-
-    # 4. Segmentation
-    signal_segments = segment_signal(smoothed, config.SAMPLES_PER_WINDOW)
-
-    return signal_segments
-
-
-if __name__ == '__main__':
-    # Example usage (for testing this module)
-    # Create a dummy raw signal similar to what load_raw_ppg_signal would return
-    dummy_raw_signal = np.random.rand(config.ORIGINAL_FS * 10) # 10 seconds of data at original FS
-    print(f"Dummy raw signal length: {len(dummy_raw_signal)} at {config.ORIGINAL_FS} Hz")
-
-    segments = full_preprocess_pipeline(dummy_raw_signal)
-    if segments:
-        print(f"Successfully preprocessed and segmented. Number of segments: {len(segments)}")
-        print(f"Length of first segment: {len(segments[0])} (should be {config.SAMPLES_PER_WINDOW}) at {config.TARGET_FS} Hz")
+    # --- Step 1: Determine Input Sampling Rate and Downsample ---
+    # This logic handles both the Mendeley data (2175 Hz) and your custom data (e.g., 100 Hz)
+    input_fs = config.ORIGINAL_FS if use_mendeley_fs else custom_fs
+    
+    # Downsample only if the input sampling rate is different from the target
+    if input_fs != config.TARGET_FS:
+        num_target_samples = int(len(raw_signal) * (config.TARGET_FS / float(input_fs)))
+        
+        # Check if the signal is long enough to produce at least one full segment after downsampling
+        if num_target_samples < config.SAMPLES_PER_WINDOW:
+            print(f"Warning: Signal too short to process. Original len: {len(raw_signal)}, Target len after downsample: {num_target_samples}")
+            return []
+            
+        signal_to_process = resample(raw_signal, num_target_samples)
     else:
-        print("Preprocessing or segmentation failed for dummy signal.")
+        signal_to_process = raw_signal
+    
+    current_fs = config.TARGET_FS
+
+    # --- Step 2: Apply Filters ---
+    # Apply bandpass filter to remove baseline drift and high-frequency noise
+    filtered_signal = apply_bandpass_filter(
+        signal_to_process, 
+        config.FILTER_LOWCUT, 
+        config.FILTER_HIGHCUT, 
+        current_fs, 
+        config.FILTER_ORDER
+    )
+    
+    # Apply Savitzky-Golay filter for smoothing
+    smoothed_signal = apply_savgol_smoothing(
+        filtered_signal, 
+        config.SAVGOL_WINDOW, 
+        config.SAVGOL_POLYORDER
+    )
+    
+    # --- Step 3: Segment the Signal into windows ---
+    segments = segment_signal(smoothed_signal, config.SAMPLES_PER_WINDOW)
+    
+    return segments
+
+# This block allows you to test the script directly if needed
+if __name__ == '__main__':
+    # Create a dummy signal for testing purposes
+    print("--- Running preprocessing.py in test mode ---")
+    fs_test = 1000  # A test sampling rate
+    duration_test = 30 # seconds
+    num_samples_test = fs_test * duration_test
+    
+    # Create a signal with a 1.5 Hz sine wave (representing heart rate) and some noise
+    time_vector = np.linspace(0, duration_test, num_samples_test, endpoint=False)
+    # A low-frequency drift component
+    drift = 0.5 * np.sin(2 * np.pi * 0.1 * time_vector)
+    # A pulsatile component
+    pulse = 1.0 * np.sin(2 * np.pi * 1.5 * time_vector)
+    # High-frequency noise
+    noise = np.random.normal(0, 0.1, num_samples_test)
+    
+    dummy_raw_signal = drift + pulse + noise
+    
+    print(f"Created a dummy raw signal with {len(dummy_raw_signal)} samples at {fs_test} Hz.")
+    
+    # Test the full pipeline
+    # We will pretend this is custom data with a 1000 Hz sampling rate
+    processed_segments = full_preprocess_pipeline(dummy_raw_signal, use_mendeley_fs=False, custom_fs=fs_test)
+    
+    if processed_segments:
+        print(f"Successfully processed the signal into {len(processed_segments)} segments.")
+        print(f"Each segment has {len(processed_segments[0])} samples.")
+        
+        # Optional: Plot for visual confirmation if you have matplotlib
+        try:
+            import matplotlib.pyplot as plt
+            plt.figure(figsize=(12, 6))
+            plt.subplot(2, 1, 1)
+            plt.title("Original vs. Smoothed Signal (First 5 seconds)")
+            plt.plot(time_vector[:fs_test*5], dummy_raw_signal[:fs_test*5], label="Original Raw Signal")
+            
+            # Recreate a smoothed version for plotting comparison (downsampled)
+            num_target_samples_plot = int(len(dummy_raw_signal) * (config.TARGET_FS / float(fs_test)))
+            resampled_for_plot = resample(dummy_raw_signal, num_target_samples_plot)
+            filtered_for_plot = apply_bandpass_filter(resampled_for_plot, config.FILTER_LOWCUT, config.FILTER_HIGHCUT, config.TARGET_FS, config.FILTER_ORDER)
+            smoothed_for_plot = apply_savgol_smoothing(filtered_for_plot, config.SAVGOL_WINDOW, config.SAVGOL_POLYORDER)
+            time_vector_resampled = np.linspace(0, duration_test, num_target_samples_plot, endpoint=False)
+            
+            plt.plot(time_vector_resampled[:config.TARGET_FS*5], smoothed_for_plot[:config.TARGET_FS*5], label=f"Processed Signal (at {config.TARGET_FS} Hz)", alpha=0.8)
+            plt.legend()
+            
+            plt.subplot(2, 1, 2)
+            plt.title("First Processed Segment")
+            plt.plot(processed_segments[0])
+            plt.tight_layout()
+            plt.show()
+            
+        except ImportError:
+            print("Matplotlib not found. Skipping plot test.")
+    else:
+        print("Processing failed to produce segments.")
