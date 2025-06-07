@@ -19,7 +19,7 @@ def run_training_pipeline():
     if not label_map:
         print("Failed to load labels. Exiting.")
         return
-    
+
     if label_map:
         sample_keys = list(label_map.keys())[:5]
         print(f"  Sample keys from label_map (Total: {len(label_map)}): {sample_keys}")
@@ -127,20 +127,28 @@ def run_training_pipeline():
         return
 
     print("\n--- Phase 4: Model Training and Evaluation ---")
-    # ... (model training logic)
-    trained_model, eval_results, feature_names = model_trainer.train_evaluate_model(feature_df, labels_series)
+    # train_evaluate_model now returns the scaler as well
+    trained_model, fitted_scaler, eval_results, feature_names = model_trainer.train_evaluate_model(
+        feature_df, 
+        labels_series,
+        use_cv=False # Set to True to try K-Fold CV, ensure scaler logic is robust for CV if you do
+    )
 
-    if trained_model:
+    if trained_model and fitted_scaler: # Check for scaler too
         print("\n--- Pipeline Completed Successfully ---")
-        model_trainer.save_model_and_features(
+        
+        # Use filenames from config.py for consistency
+        model_trainer.save_model_scaler_and_features( 
             trained_model,
+            fitted_scaler, # Pass the fitted scaler
             feature_names, 
             config.MODEL_OUTPUT_DIR,
-            config.SAVED_MODEL_NAME,
-            config.SAVED_FEATURES_NAME
+            config.SAVED_MODEL_NAME,     # e.g., "lgbm_glucose_model_v2.txt"
+            config.SAVED_SCALER_NAME,    # e.g., "mendeley_feature_scaler_v2.pkl"
+            config.SAVED_FEATURES_NAME   # e.g., "model_features_v2.json"
         )
     else:
-        print("\n--- Pipeline Failed: Model not trained ---")
+        print("\n--- Pipeline Failed: Model or Scaler not trained/created ---")
 
 
 if __name__ == '__main__':
