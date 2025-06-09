@@ -19,8 +19,8 @@ RAW_DATA_FOLDER = os.path.join(BASE_DATA_PATH, "RawData")
 LABELS_FILE = os.path.join(BASE_DATA_PATH, "Labels", "Total.csv")
 
 # --- Signal Processing Parameters ---
-ORIGINAL_FS = 2175  
-TARGET_FS = 50      
+ORIGINAL_FS = 2175
+TARGET_FS = 100
 FILTER_LOWCUT = 0.5
 FILTER_HIGHCUT = 5.0
 FILTER_ORDER = 2
@@ -30,13 +30,13 @@ WINDOW_DURATION_SEC = 5
 SAMPLES_PER_WINDOW = int(WINDOW_DURATION_SEC * TARGET_FS)
 
 # --- Model Training Parameters ---
-TEST_SET_SIZE = 0.3  
-RANDOM_STATE = 42    
+TEST_SET_SIZE = 0.3
+RANDOM_STATE = 42
 
 # --- MODIFIED LightGBM parameters for potentially better sensitivity/generalization ---
 LGBM_PARAMS = {
-    'objective': 'regression', 
-    'metric': 'rmse',          
+    'objective': 'regression',
+    'metric': 'rmse',
     'boosting_type': 'gbdt',
     'num_leaves': 41,          # Increased from 31: allows more complex trees
     'learning_rate': 0.02,     # Decreased from 0.05: smaller steps, needs more rounds
