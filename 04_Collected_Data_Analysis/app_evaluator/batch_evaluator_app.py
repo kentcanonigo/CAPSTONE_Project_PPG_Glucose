@@ -37,7 +37,6 @@ except Exception as e_path:
 
 
 # --- Integrated Fusion Functions ---
-# For a self-contained application, these functions are included directly.
 def calculate_snr_for_segment(segment_array, fs):
     if segment_array is None or len(segment_array) < 2: return 0.01
     try:
@@ -71,25 +70,33 @@ def calculate_sqi_for_segment(segment_array, fs):
 
 def fuse_features_snr_weighted(features, segments, fs):
     fused_list = []
+    # Check if there are valid features to process
+    if not features or not segments or not segments[0]: return []
     num_segments = len(segments[0])
+    
     for i in range(num_segments):
-        snrs = [calculate_snr_for_segment(segs[i], fs) for segs in segments]
+        snrs = [calculate_snr_for_segment(segs[i], fs) if i < len(segs) else 0 for segs in segments]
         total_snr = sum(snrs)
         weights = [snr / total_snr if total_snr > 1e-6 else 1/3 for snr in snrs]
         
         fused_features = np.zeros_like(features[0][i])
         for finger_idx in range(len(features)):
-            fused_features += weights[finger_idx] * np.array(features[finger_idx][i])
+            if len(features[finger_idx]) > i:
+                fused_features += weights[finger_idx] * np.array(features[finger_idx][i])
         fused_list.append(fused_features.tolist())
     return fused_list
 
 def fuse_features_sqi_selected(features, segments, fs):
     fused_list = []
+    # Check if there are valid features to process
+    if not features or not segments or not segments[0]: return []
     num_segments = len(segments[0])
+
     for i in range(num_segments):
-        sqis = [calculate_sqi_for_segment(segs[i], fs) for segs in segments]
+        sqis = [calculate_sqi_for_segment(segs[i], fs) if i < len(segs) else 0 for segs in segments]
         best_finger_idx = np.argmax(sqis)
-        fused_list.append(features[best_finger_idx][i])
+        if len(features[best_finger_idx]) > i:
+            fused_list.append(features[best_finger_idx][i])
     return fused_list
 
 
@@ -97,29 +104,40 @@ class BatchEvaluatorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Batch Data Evaluator (for Pre-trained Model)")
-        self.root.geometry("650x600") # FIX: Changed width to 650 and height to 600
+        self.root.withdraw() # Hide window to prevent flash
+        self.root.geometry("650x600")
 
-        # --- Define Paths ---
         self.project_root = project_root
         self.mendeley_model_dir = os.path.join(self.project_root, "02_Machine_Learning_Mendeley", "src", "models")
         self.output_dir = os.path.join(self.project_root, "04_Collected_Data_Analysis", "evaluation_results")
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
 
-        # --- TKinter Variables & Model Components ---
         self.data_folder_path = tk.StringVar()
         self.processing_in_progress = False
         self.model, self.scaler, self.expected_feature_order = None, None, []
 
         self._setup_gui()
         self._load_model_and_scaler()
+        self._center_window() # Center the window
+        self.root.deiconify() # Show the centered window
+
+    def _center_window(self):
+        """Centers the main window on the user's screen."""
+        self.root.update_idletasks()
+        width = self.root.winfo_width()
+        height = self.root.winfo_height()
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        x = (screen_width // 2) - (width // 2)
+        y = (screen_height // 2) - (height // 2)
+        self.root.geometry(f'{width}x{height}+{x}+{y}')
 
     def _setup_gui(self):
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
         main_frame.columnconfigure(0, weight=1)
 
-        # Row 0: Folder Selection
         file_frame = ttk.LabelFrame(main_frame, text="Select Root Folder of Custom Data", padding="10")
         file_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         file_frame.columnconfigure(1, weight=1)
@@ -127,22 +145,21 @@ class BatchEvaluatorApp:
         self.selected_folder_label = ttk.Label(file_frame, text="No folder selected. (Select the 'Collected_Data' folder)", relief=tk.SUNKEN)
         self.selected_folder_label.grid(row=0, column=1, sticky="ew", padx=5)
 
-        # Row 1: Action Button
-        self.process_button = ttk.Button(main_frame, text="Process All Samples & Generate Report", command=self._start_processing_thread, state=tk.DISABLED)
-        self.process_button.grid(row=1, column=0, pady=10, ipady=5)
+        control_frame = ttk.Frame(main_frame)
+        control_frame.grid(row=1, column=0, sticky="ew", pady=10)
+        control_frame.columnconfigure(0, weight=1)
+        
+        self.process_button = ttk.Button(control_frame, text="Process All Samples & Generate Report", command=self._start_processing_thread, state=tk.DISABLED)
+        self.process_button.pack(pady=5, ipady=5)
 
-        # Row 2: Results Table
-        # FIX: Reduced height of the results frame to make the table shorter
         results_frame = ttk.LabelFrame(main_frame, text="Averaged Evaluation Results (Across All Samples)", padding="10")
         results_frame.grid(row=2, column=0, sticky="nsew", pady=5)
         results_frame.columnconfigure(0, weight=1)
         results_frame.rowconfigure(0, weight=1)
 
         self.results_cols = ["Approach", "Avg. mARD (%)", "Avg. RMSE (mg/dL)", "Avg. MAE (mg/dL)"]
-        # FIX: Reduced Treeview height
         self.results_tree = ttk.Treeview(results_frame, columns=self.results_cols, show="headings", height=5)
         
-        # FIX: Adjusted column widths for the new 650px window size
         col_widths = {"Approach": 200, "Avg. mARD (%)": 120, "Avg. RMSE (mg/dL)": 120, "Avg. MAE (mg/dL)": 120}
         
         for col in self.results_cols:
@@ -154,8 +171,6 @@ class BatchEvaluatorApp:
         tree_scrollbar.grid(row=0, column=1, sticky='ns')
         self.results_tree.configure(yscrollcommand=tree_scrollbar.set)
 
-
-        # Row 3: Log Viewer
         log_frame = ttk.LabelFrame(main_frame, text="Processing Log", padding="5")
         log_frame.grid(row=3, column=0, sticky="ew", pady=(10,0))
         log_frame.columnconfigure(0, weight=1)
@@ -165,7 +180,7 @@ class BatchEvaluatorApp:
         log_scrollbar.grid(row=0, column=1, sticky="ns")
         self.log_text.configure(yscrollcommand=log_scrollbar.set)
 
-        main_frame.rowconfigure(2, weight=1) # Let the results table expand vertically
+        main_frame.rowconfigure(2, weight=1)
 
     def _log_message(self, message):
         self.root.after(0, lambda: self._update_log_text(message))
@@ -235,7 +250,6 @@ class BatchEvaluatorApp:
                 self._log_message(f"Processing sample: {sample_id}...")
                 actual_glucose = row['Glucose_mgdL']
 
-                # --- Per-File Pipeline ---
                 ppg_df = pd.read_csv(ppg_filepath)
                 signals = [pd.to_numeric(ppg_df[f'ppg_finger{i+1}'], errors='coerce').dropna().to_numpy() for i in range(3)]
 
@@ -244,11 +258,9 @@ class BatchEvaluatorApp:
                 for sig in signals:
                     segments = preprocessing_mendeley.full_preprocess_pipeline(sig, use_mendeley_fs=False, custom_fs=100)
                     all_segments.append(segments)
-
                     if not segments:
                         all_features_scaled.append([])
                         continue
-
                     features = [feature_extraction_mendeley.extract_all_features_from_segment(s, config_mendeley.TARGET_FS) for s in segments]
                     ordered_features = pd.DataFrame(features)[self.expected_feature_order]
                     all_features_scaled.append(self.scaler.transform(ordered_features))
@@ -256,9 +268,10 @@ class BatchEvaluatorApp:
                 fused_snr = fuse_features_snr_weighted(all_features_scaled, all_segments, config_mendeley.TARGET_FS)
                 fused_sqi = fuse_features_sqi_selected(all_features_scaled, all_segments, config_mendeley.TARGET_FS)
 
-                # --- Metrics Calculation ---
                 def get_metrics(features):
-                    if len(features) == 0: return [np.nan] * 4
+                    # FIX: Use an explicit check for non-empty lists/arrays
+                    if features is None or len(features) == 0:
+                        return [np.nan] * 4
                     preds = self.model.predict(features)
                     avg_pred = np.mean(preds)
                     mard = np.mean(np.abs(preds - actual_glucose) / actual_glucose) * 100
@@ -266,36 +279,25 @@ class BatchEvaluatorApp:
                     mae = mean_absolute_error([actual_glucose] * len(preds), preds)
                     return [avg_pred, mard, rmse, mae]
 
-                # Store detailed results for the CSV log
                 approaches = ["Index Finger", "Middle Finger", "Ring Finger", "SNR-Weighted Fusion", "SQI-Selected Fusion"]
                 features_sets = all_features_scaled + [fused_snr, fused_sqi]
 
                 for i, approach in enumerate(approaches):
                     pred_glucose, mard, rmse, mae = get_metrics(features_sets[i])
                     detailed_results.append({
-                        "SampleID": sample_id,
-                        "Approach": approach,
-                        "ActualGlucose": actual_glucose,
-                        "PredictedGlucose": pred_glucose,
-                        "mARD(%)": mard,
-                        "RMSE(mg/dL)": rmse,
-                        "MAE(mg/dL)": mae
+                        "SampleID": sample_id, "Approach": approach, "ActualGlucose": actual_glucose,
+                        "PredictedGlucose": pred_glucose, "mARD(%)": mard, "RMSE(mg/dL)": rmse, "MAE(mg/dL)": mae
                     })
 
-            # --- Aggregation and Final Reporting ---
             self._log_message("\nBatch processing complete. Aggregating results...")
             results_df = pd.DataFrame(detailed_results).dropna()
 
-            # Save detailed log to CSV
             output_csv_path = os.path.join(self.output_dir, "detailed_evaluation_log.csv")
             results_df.to_csv(output_csv_path, index=False)
             self._log_message(f"Detailed log with all sample results saved to:\n{output_csv_path}")
 
-            # Calculate and display averaged results in GUI
             avg_results = results_df.groupby('Approach').agg({
-                'mARD(%)': 'mean',
-                'RMSE(mg/dL)': 'mean',
-                'MAE(mg/dL)': 'mean'
+                'mARD(%)': 'mean', 'RMSE(mg/dL)': 'mean', 'MAE(mg/dL)': 'mean'
             }).reset_index()
 
             display_data = []
