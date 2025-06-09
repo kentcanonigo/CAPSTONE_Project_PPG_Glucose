@@ -179,7 +179,7 @@ class PPGDataCollectorApp:
         ttk.Label(collection_frame, text="Duration (s):").grid(row=0, column=0, sticky=tk.W, padx=(0,5), pady=3) 
         self.duration_entry = ttk.Entry(collection_frame, width=18) 
         self.duration_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), pady=3, columnspan=3) 
-        self.duration_entry.insert(0, "10")
+        self.duration_entry.insert(0, "20")
         self.start_collection_button = ttk.Button(collection_frame, text="Start Collection & Save New Entry", command=self.start_data_collection_and_save)
         self.start_collection_button.grid(row=1, column=0, columnspan=4, pady=(10,5), ipady=5) 
         self.start_collection_button.config(state=tk.DISABLED)
