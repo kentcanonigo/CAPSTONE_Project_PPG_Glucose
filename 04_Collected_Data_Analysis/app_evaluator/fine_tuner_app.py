@@ -9,7 +9,6 @@ import threading
 from datetime import datetime
 import joblib
 import lightgbm as lgb
-# FIX: Import both GroupShuffleSplit and train_test_split
 from sklearn.model_selection import GroupShuffleSplit, train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
@@ -71,26 +70,37 @@ def calculate_sqi_for_segment(segment_array, fs):
 
 def fuse_features_snr_weighted(features, segments, fs):
     fused_list = []
-    if not all(len(f) == len(segments[0]) for f in features): return []
+    # FIX: Use an explicit check for non-empty lists/arrays to avoid ValueError
+    non_empty_features = [f for f in features if f is not None and len(f) > 0]
+    if not non_empty_features or not all(len(f) == len(segments[0]) for f in non_empty_features):
+        return []
+        
     num_segments = len(segments[0])
     for i in range(num_segments):
         snrs = [calculate_snr_for_segment(segs[i], fs) for segs in segments]
         total_snr = sum(snrs)
         weights = [snr / total_snr if total_snr > 1e-6 else 1/3 for snr in snrs]
+        
         fused_features = np.zeros_like(features[0][i])
         for finger_idx in range(len(features)):
-            fused_features += weights[finger_idx] * np.array(features[finger_idx][i])
+             if features[finger_idx] is not None and len(features[finger_idx]) > 0:
+                fused_features += weights[finger_idx] * np.array(features[finger_idx][i])
         fused_list.append(fused_features.tolist())
     return fused_list
 
 def fuse_features_sqi_selected(features, segments, fs):
     fused_list = []
-    if not all(len(f) == len(segments[0]) for f in features): return []
+    # FIX: Use an explicit check for non-empty lists/arrays to avoid ValueError
+    non_empty_features = [f for f in features if f is not None and len(f) > 0]
+    if not non_empty_features or not all(len(f) == len(segments[0]) for f in non_empty_features):
+        return []
+
     num_segments = len(segments[0])
     for i in range(num_segments):
         sqis = [calculate_sqi_for_segment(segs[i], fs) for segs in segments]
         best_finger_idx = np.argmax(sqis)
-        fused_list.append(features[best_finger_idx][i])
+        if features[best_finger_idx] is not None and len(features[best_finger_idx]) > i:
+             fused_list.append(features[best_finger_idx][i])
     return fused_list
 
 
@@ -98,6 +108,7 @@ class FineTunerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Model Fine-Tuning & Final Evaluation")
+        self.root.withdraw() # Hide window initially
         self.root.geometry("650x600")
 
         self.project_root = project_root
@@ -111,6 +122,19 @@ class FineTunerApp:
 
         self._setup_gui()
         self._load_pretrained_artifacts()
+        self._center_window() # Center the window
+        self.root.deiconify() # Show the centered window
+
+    def _center_window(self):
+        """Centers the main window on the user's screen."""
+        self.root.update_idletasks()
+        width = self.root.winfo_width()
+        height = self.root.winfo_height()
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        x = (screen_width // 2) - (width // 2)
+        y = (screen_height // 2) - (height // 2)
+        self.root.geometry(f'{width}x{height}+{x}+{y}')
 
     def _setup_gui(self):
         main_frame = ttk.Frame(self.root, padding="10")
@@ -125,8 +149,13 @@ class FineTunerApp:
         ttk.Label(info_frame, text="Custom Data Source:").grid(row=1, column=0, sticky="w", padx=5)
         ttk.Label(info_frame, text=self.custom_data_dir, font="TkDefaultFont 9 italic", wraplength=450).grid(row=1, column=1, sticky="w")
         
-        self.process_button = ttk.Button(main_frame, text="Start Fine-Tuning & Evaluation", command=self._start_processing_thread)
-        self.process_button.grid(row=1, column=0, pady=10, ipady=5)
+        # --- Control Frame for Centered Button ---
+        control_frame = ttk.Frame(main_frame)
+        control_frame.grid(row=1, column=0, sticky="ew", pady=10)
+        control_frame.columnconfigure(0, weight=1)
+        
+        self.process_button = ttk.Button(control_frame, text="Start Fine-Tuning & Evaluation", command=self._start_processing_thread)
+        self.process_button.pack(pady=5, ipady=5)
 
         results_frame = ttk.LabelFrame(main_frame, text="Final Fine-Tuned Model Performance (on Hold-Out Test Set)", padding="10")
         results_frame.grid(row=2, column=0, sticky="nsew", pady=5)
@@ -205,10 +234,13 @@ class FineTunerApp:
                 
                 segments_per_finger = [preprocessing_mendeley.full_preprocess_pipeline(s, use_mendeley_fs=False, custom_fs=100) for s in signals]
                 
-                if not all(len(s) == len(segments_per_finger[0]) for s in segments_per_finger) or not segments_per_finger[0]: continue
+                if not segments_per_finger or not all(len(s) == len(segments_per_finger[0]) for s in segments_per_finger if s): continue
                 
                 features_per_finger = []
                 for segs in segments_per_finger:
+                    if not segs:
+                        features_per_finger.append([])
+                        continue
                     features = [feature_extraction_mendeley.extract_all_features_from_segment(s, config_mendeley.TARGET_FS) for s in segs]
                     ordered_df = pd.DataFrame(features)[self.expected_feature_order]
                     features_per_finger.append(self.scaler.transform(ordered_df))
@@ -237,8 +269,12 @@ class FineTunerApp:
             X_train_list, y_train_list = [], []
             for p_data in train_data:
                 fused_features = fuse_features_sqi_selected(p_data['features_scaled'], p_data['segments'], config_mendeley.TARGET_FS)
-                X_train_list.extend(fused_features)
-                y_train_list.extend([p_data['actual_glucose']] * len(fused_features))
+                if fused_features:
+                    X_train_list.extend(fused_features)
+                    y_train_list.extend([p_data['actual_glucose']] * len(fused_features))
+
+            if not X_train_list:
+                self._log_message("No training data generated after fusion. Aborting."); return
 
             ft_params = self.pretrained_model.params.copy()
             ft_params['learning_rate'] = 0.01
@@ -254,7 +290,6 @@ class FineTunerApp:
             detailed_log = []
             
             for p_data in test_data:
-                sample_id = f"{p_data['id']}_{row['Sample_Num']}" # Note: Sample_num might not be unique here if multiple samples per ID
                 actual_glucose = p_data['actual_glucose']
                 
                 features_sets = {
@@ -310,7 +345,7 @@ class FineTunerApp:
 
     def _update_results_display(self, results_list):
         for i in self.results_tree.get_children(): self.results_tree.delete(i)
-        for row in sorted(results_list, key=lambda x: x[0]): # Sort alphabetically for consistent order
+        for row in sorted(results_list, key=lambda x: x[0]):
             self.results_tree.insert("", tk.END, values=row)
 
 if __name__ == '__main__':
@@ -322,3 +357,4 @@ if __name__ == '__main__':
         root = ThemedTk(theme="arc")
         app = FineTunerApp(root)
         root.mainloop()
+
