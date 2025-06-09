@@ -12,6 +12,7 @@ class FinalReportApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Final Comparative Analysis Report")
+        self.root.withdraw() # Hide window initially to prevent flash of uncentered window
         self.root.geometry("650x600")
 
         # --- Define Paths ---
@@ -28,24 +29,41 @@ class FinalReportApp:
 
         self._setup_gui()
         self._check_log_file()
+        self._center_window() # Center the window after setting it up
+        self.root.deiconify() # Show the window now that it's centered
+
+    def _center_window(self):
+        """Centers the main window on the user's screen."""
+        self.root.update_idletasks()
+        width = self.root.winfo_width()
+        height = self.root.winfo_height()
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        x = (screen_width // 2) - (width // 2)
+        y = (screen_height // 2) - (height // 2)
+        self.root.geometry(f'{width}x{height}+{x}+{y}')
 
     def _setup_gui(self):
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
         main_frame.columnconfigure(0, weight=1)
 
-        # Info Frame
+        # --- Info Frame (Row 0) ---
         info_frame = ttk.LabelFrame(main_frame, text="Report Configuration", padding="10")
         info_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         info_frame.columnconfigure(1, weight=1)
         ttk.Label(info_frame, text="Input Data File:").grid(row=0, column=0, sticky="w", padx=5)
         ttk.Label(info_frame, text="fine_tuned_model_evaluation_log.csv", font="TkDefaultFont 9 italic").grid(row=0, column=1, sticky="w")
         
-        # Action Button
-        self.process_button = ttk.Button(main_frame, text="Generate Final Comparison Report", command=self._start_report_thread)
-        self.process_button.grid(row=1, column=0, pady=10, ipady=5)
+        # --- Control Frame for Centered Button (Row 1) ---
+        control_frame = ttk.Frame(main_frame)
+        control_frame.grid(row=1, column=0, sticky="ew", pady=10)
+        control_frame.columnconfigure(0, weight=1) 
 
-        # Results Table
+        self.process_button = ttk.Button(control_frame, text="Generate Final Comparison Report", command=self._start_report_thread)
+        self.process_button.pack(pady=5, ipady=5) 
+
+        # --- Results Table (Row 2) ---
         results_frame = ttk.LabelFrame(main_frame, text="Table 4.4: Comparative Performance of Single vs. Fused Approaches", padding="10")
         results_frame.grid(row=2, column=0, sticky="nsew", pady=5)
         results_frame.columnconfigure(0, weight=1)
@@ -61,7 +79,7 @@ class FinalReportApp:
             
         self.results_tree.grid(row=0, column=0, sticky="nsew")
 
-        # Log Viewer
+        # --- Log Viewer (Row 3) ---
         log_frame = ttk.LabelFrame(main_frame, text="Analysis Log", padding="5")
         log_frame.grid(row=3, column=0, sticky="ew", pady=(10,0))
         log_frame.columnconfigure(0, weight=1)
@@ -113,9 +131,7 @@ class FinalReportApp:
                 raise ValueError("Log file is missing results for single-finger or fusion methods.")
 
             # 3. Calculate average performance for single fingers
-            # This complex groupby first averages segments per participant, then averages participants.
             avg_single_finger_perf = single_finger_df.groupby(['ParticipantID', 'Approach']).mean(numeric_only=True).groupby(level='Approach').mean()
-            # Then we average the 3 finger results together
             final_avg_single_finger = avg_single_finger_perf.mean()
             
             # 4. Calculate average performance for fusion methods
@@ -124,7 +140,6 @@ class FinalReportApp:
             # 5. Prepare data for display
             display_data = []
             
-            # Add average single finger row
             display_data.append([
                 "Average Single-Finger",
                 f"{final_avg_single_finger['mARD(%)']:.2f}",
@@ -132,7 +147,6 @@ class FinalReportApp:
                 f"{final_avg_single_finger['MAE(mg/dL)']:.2f}"
             ])
             
-            # Add fusion rows
             for approach in fusion_approaches:
                 if approach in avg_fusion_perf.index:
                     row = avg_fusion_perf.loc[approach]
