@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import os
 
 def plot_scatter_predicted_vs_actual(df, actual_col, predicted_col, filename="scatter_plot.png"):
     """
@@ -17,12 +18,12 @@ def plot_scatter_predicted_vs_actual(df, actual_col, predicted_col, filename="sc
     fig, ax = plt.subplots(figsize=(8, 8))
 
     # Create the scatter plot
-    sns.scatterplot(data=df, x=actual_col, y=predicted_col, ax=ax, alpha=0.7, s=50, label="Predictions")
+    sns.scatterplot(data=df, x=actual_col, y=predicted_col, ax=ax, alpha=0.7, s=80, label="Predictions")
 
     # Add a 45-degree line for perfect correlation
     lims = [
-        np.min([ax.get_xlim(), ax.get_ylim()]),  # Get the minimum of the axis limits
-        np.max([ax.get_xlim(), ax.get_ylim()]),  # Get the maximum of the axis limits
+        np.min([df[actual_col].min(), df[predicted_col].min()]) - 10,
+        np.max([df[actual_col].max(), df[predicted_col].max()]) + 10,
     ]
     ax.plot(lims, lims, 'r--', alpha=0.75, zorder=0, label="Perfect Prediction (y=x)")
 
@@ -55,19 +56,18 @@ def plot_error_distribution_boxplots(df, ard_columns, filename="boxplot.png"):
     # Rename columns for plotting
     df_renamed = df.rename(columns=ard_columns)
     
-    # We need to "melt" the DataFrame to make it suitable for seaborn's boxplot
-    # This transforms the data from wide format to long format
+    # Melt the DataFrame to transform it from wide to long format
     df_melted = pd.melt(df_renamed, value_vars=list(ard_columns.values()),
                         var_name='Method', value_name='Absolute Relative Difference (ARD %)')
 
     # Create the box plots
     sns.boxplot(data=df_melted, x='Method', y='Absolute Relative Difference (ARD %)', ax=ax, 
-                palette="viridis", showfliers=True) # showfliers=True to show outliers
+                palette="viridis", showfliers=True)
     
     ax.set_title("Comparison of Error Distributions Across Methods", fontsize=16, pad=20)
     ax.set_xlabel("Estimation Method", fontsize=12)
     ax.set_ylabel("Absolute Relative Difference (ARD %)", fontsize=12)
-    plt.xticks(rotation=15, ha='right') # Rotate labels slightly for better readability
+    plt.xticks(rotation=15, ha='right')
 
     plt.tight_layout()
     plt.savefig(filename, dpi=300)
@@ -76,33 +76,53 @@ def plot_error_distribution_boxplots(df, ard_columns, filename="boxplot.png"):
 
 
 if __name__ == '__main__':
-    # --- This is where you load your ACTUAL results file ---
-    # For demonstration, we will create a sample DataFrame.
-    # Replace this with: df_results = pd.read_csv("path/to/your/final_evaluation_results.csv")
-    
-    print("Creating sample data for demonstration...")
-    data = {
-        'Actual_Glucose': [90, 105, 120, 85, 99, 115, 130, 92, 108, 125, 95, 112],
-        'ARD_Finger1':    [15.1, 12.5, 18.2, 10.1, 14.5, 20.1, 13.5, 16.2, 11.8, 19.5, 14.8, 15.5],
-        'ARD_Finger2':    [14.5, 13.1, 17.5, 11.5, 13.9, 19.5, 14.1, 15.5, 12.2, 18.9, 15.2, 16.1],
-        'ARD_Finger3':    [16.2, 14.2, 19.1, 12.2, 15.1, 21.0, 15.2, 17.1, 13.1, 20.1, 16.5, 17.2],
-        'ARD_SNR_Fusion': [11.2, 10.1, 14.5, 9.5, 11.9, 15.2, 11.1, 12.5, 9.8, 14.9, 11.5, 12.1],
-        'ARD_SQI_Fusion': [10.5, 9.8, 13.2, 8.9, 10.5, 14.8, 10.2, 11.8, 9.1, 13.5, 10.8, 11.5],
-        'Predicted_SQI_Fusion': [85, 115, 105, 92, 108, 98, 142, 82, 115, 110, 104, 100] # Predicted values from best model
-    }
-    df_results = pd.DataFrame(data)
-    print("Sample data created.")
+    # --- Load the actual results from the batch evaluator ---
+    try:
+        # Define the CORRECT path to the log file relative to the script's location
+        log_filepath = '../evaluation_results/detailed_evaluation_log.csv'
+        df_long = pd.read_csv(log_filepath)
+        print(f"✅ Successfully loaded results from '{log_filepath}'")
+    except FileNotFoundError:
+        print(f"❌ ERROR: The results file was not found at '{log_filepath}'.")
+        print("Please ensure you have run the 'batch_evaluator_app.py' first to generate the results.")
+        exit()
 
-    # --- Generate Recommendation 1: Scatter Plot ---
+    # --- Prepare the data for plotting ---
+    print("\nProcessing data for report generation...")
+    # 1. For the Box Plot: Pivot the mARD data from long to wide format
+    df_ard_wide = df_long.pivot_table(index='SampleID', columns='Approach', values='mARD(%)').reset_index()
+
+    # Rename columns to a consistent format
+    df_ard_wide = df_ard_wide.rename(columns={
+        'Index Finger': 'ARD_Finger1',
+        'Middle Finger': 'ARD_Finger2',
+        'Ring Finger': 'ARD_Finger3',
+        'SNR-Weighted Fusion': 'ARD_SNR_Fusion',
+        'SQI-Selected Fusion': 'ARD_SQI_Fusion'
+    })
+
+    # 2. For the Scatter Plot: Get the actual and predicted values for the best model (SQI Fusion)
+    df_sqi = df_long[df_long['Approach'] == 'SQI-Selected Fusion'].copy()
+    df_sqi = df_sqi.rename(columns={
+        'ActualGlucose': 'Actual_Glucose',
+        'PredictedGlucose': 'Predicted_SQI_Fusion'
+    })
+
+    # 3. Merge the datasets to create one final DataFrame for plotting
+    df_results = pd.merge(df_ard_wide, df_sqi[['SampleID', 'Actual_Glucose', 'Predicted_SQI_Fusion']], on='SampleID')
+    print("✅ Data has been successfully prepared for plotting.")
+
+    # --- Generate Report Graph 1: Scatter Plot ---
+    print("\nGenerating Scatter Plot...")
     plot_scatter_predicted_vs_actual(
         df=df_results,
         actual_col='Actual_Glucose',
         predicted_col='Predicted_SQI_Fusion',
-        filename="Figure_4_1_Predicted_vs_Actual.png" # Example filename
+        filename="Figure_4_1_Predicted_vs_Actual_CustomData.png"
     )
 
-    # --- Generate Recommendation 2: Box Plot ---
-    # Define the columns and their nice display names for the plot
+    # --- Generate Report Graph 2: Box Plot ---
+    print("\nGenerating Box Plot...")
     ard_cols_to_plot = {
         'ARD_Finger1': 'Index Finger',
         'ARD_Finger2': 'Middle Finger',
@@ -110,8 +130,13 @@ if __name__ == '__main__':
         'ARD_SNR_Fusion': 'SNR Fusion',
         'ARD_SQI_Fusion': 'SQI Fusion'
     }
-    plot_error_distribution_boxplots(
-        df=df_results,
-        ard_columns=ard_cols_to_plot,
-        filename="Figure_4_2_ARD_Distribution.png" # Example filename
-    )
+
+    # Verify that all necessary columns exist in the DataFrame
+    if all(col in df_results.columns for col in ard_cols_to_plot.keys()):
+        plot_error_distribution_boxplots(
+            df=df_results,
+            ard_columns=ard_cols_to_plot,
+            filename="Figure_4_2_ARD_Distribution_CustomData.png"
+        )
+    else:
+        print("\n❌ Warning: Could not generate box plot because one or more required ARD columns were not found.")
