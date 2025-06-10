@@ -357,4 +357,3 @@ if __name__ == '__main__':
         root = ThemedTk(theme="arc")
         app = FineTunerApp(root)
         root.mainloop()
-
