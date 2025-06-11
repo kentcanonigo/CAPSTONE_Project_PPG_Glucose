@@ -334,6 +334,22 @@ class FineTunerApp:
             self.root.after(0, self._update_results_display, display_data)
             self._log_message("\n--- Pipeline Finished Successfully ---")
 
+            self._log_message("Saving the fine-tuned model...")
+            
+            # Define a directory for your new models if it doesn't exist
+            fine_tuned_model_dir = os.path.join(self.project_root, "04_Collected_Data_Analysis", "models_finetuned")
+            if not os.path.exists(fine_tuned_model_dir):
+                os.makedirs(fine_tuned_model_dir)
+
+            # Create a descriptive filename
+            num_subjects = len(train_ids) # Using the number of participants in the tuning set
+            model_filename = f"lgbm_model_finetuned_on_{num_subjects}subjects.txt"
+            model_save_path = os.path.join(fine_tuned_model_dir, model_filename)
+
+            # Save the model
+            fine_tuned_model.save_model(model_save_path)
+            self._log_message(f"Fine-tuned model successfully saved to:\n{model_save_path}")
+
         except Exception as e:
             import traceback
             error_msg = f"ERROR in pipeline: {e}\n{traceback.format_exc()}"
