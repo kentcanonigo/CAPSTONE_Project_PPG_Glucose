@@ -30,7 +30,7 @@ class PPGLiveMonitorApp:
         self.plot_data_1 = collections.deque(maxlen=self.buffer_size)
         self.plot_data_2 = collections.deque(maxlen=self.buffer_size)
         self.plot_data_3 = collections.deque(maxlen=self.buffer_size)
-
+        # 
         self._setup_gui()
         self._center_window()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -136,6 +136,38 @@ class PPGLiveMonitorApp:
                 return
             try:
                 self.serial_connection = serial.Serial(port, 115200, timeout=1)
+                time.sleep(3)  # Wait longer for ESP32 to fully initialize
+                
+                # Clear any pending data
+                self.serial_connection.flushInput()
+                self.serial_connection.flushOutput()
+                
+                # Try different command formats
+                commands_to_try = [
+                    "S,3600\n",   # 1 hour in seconds
+                    "S,60\n",     # 1 minute
+                    "S,10\n",     # 10 seconds
+                    "S,-1\n",     # -1 might mean continuous
+                    "S\n",        # Just S without duration
+                ]
+                
+                for cmd in commands_to_try:
+                    print(f"Trying command: {cmd.strip()}")
+                    self.serial_connection.write(cmd.encode())
+                    time.sleep(0.5)  # Wait for response
+                    
+                    # Check for any response
+                    if self.serial_connection.in_waiting > 0:
+                        response = self.serial_connection.readline().decode('utf-8').strip()
+                        print(f"Response: {response}")
+                        
+                        if "ERR" not in response:
+                            print(f"Success with command: {cmd.strip()}")
+                            break
+                    else:
+                        print("No immediate response, continuing...")
+                        break  # Assume success if no error
+                
                 self.is_monitoring = True
                 
                 # Start reading thread
@@ -161,18 +193,62 @@ class PPGLiveMonitorApp:
                     break
                 line = self.serial_connection.readline().decode('utf-8').strip()
                 if line:
-                    parts = line.split(',')
-                    if len(parts) == 4: # Expects timestamp,ppg1,ppg2,ppg3
-                        self.plot_data_1.append(int(parts[1]))
-                        self.plot_data_2.append(int(parts[2]))
-                        self.plot_data_3.append(int(parts[3]))
-            except (serial.SerialException, TypeError, UnicodeDecodeError, ValueError):
+                    print(f"Received: {line}")  # Debug: Print all received data
+                    
+                    # Skip initialization messages and info lines
+                    if any(skip_word in line.lower() for skip_word in 
+                          ['ets', 'rst:', 'configsip', 'clk_drv', 'mode:', 'load:', 'entry', 
+                           'analog pulse', 'sensor pins', 'waiting', 'data format', 'err_']):
+                        continue
+                    
+                    # Check if this looks like numeric data
+                    if ',' in line and not any(char.isalpha() for char in line.replace(',', '')):
+                        parts = line.split(',')
+                        print(f"Parts: {parts}, Length: {len(parts)}")  # Debug: Print parsed parts
+                        
+                        # Look for numeric data only (timestamp,ppg1,ppg2,ppg3)
+                        if len(parts) == 4:
+                            try:
+                                # Parse as timestamp,ppg1,ppg2,ppg3
+                                timestamp = int(parts[0])
+                                ppg1, ppg2, ppg3 = int(parts[1]), int(parts[2]), int(parts[3])
+                                
+                                self.plot_data_1.append(ppg1)
+                                self.plot_data_2.append(ppg2)
+                                self.plot_data_3.append(ppg3)
+                                print(f"Added data: PPG1={ppg1}, PPG2={ppg2}, PPG3={ppg3}")  # Debug
+                                
+                            except ValueError as e:
+                                print(f"Value error parsing: {line} - {e}")
+                                continue
+                        elif len(parts) == 3:
+                            try:
+                                # Parse as ppg1,ppg2,ppg3 (no timestamp)
+                                ppg1, ppg2, ppg3 = int(parts[0]), int(parts[1]), int(parts[2])
+                                
+                                self.plot_data_1.append(ppg1)
+                                self.plot_data_2.append(ppg2)
+                                self.plot_data_3.append(ppg3)
+                                print(f"Added data: PPG1={ppg1}, PPG2={ppg2}, PPG3={ppg3}")  # Debug
+                                
+                            except ValueError as e:
+                                print(f"Value error parsing: {line} - {e}")
+                                continue
+                    else:
+                        print(f"Non-numeric data: {line}")
+            except (serial.SerialException, TypeError, UnicodeDecodeError) as e:
+                print(f"Serial error: {e}")
                 time.sleep(0.01)
                 continue
         print("Serial reading thread finished.")
 
     def _update_plot(self, frame):
         """Updates plot data for the animation. Called by FuncAnimation."""
+        # Add data count indicator
+        data_count = len(self.plot_data_1)
+        if data_count > 0:
+            print(f"Plotting {data_count} data points")  # Debug: Show we have data
+        
         self.line1.set_data(range(len(self.plot_data_1)), self.plot_data_1)
         self.line2.set_data(range(len(self.plot_data_2)), self.plot_data_2)
         self.line3.set_data(range(len(self.plot_data_3)), self.plot_data_3)
@@ -182,12 +258,9 @@ class PPGLiveMonitorApp:
             if data:
                 min_val, max_val = min(data), max(data)
                 padding = (max_val - min_val) * 0.1
-                # Ensure padding is at least a certain amount to avoid flat lines looking weird
                 padding = max(padding, 20) 
                 ax.set_ylim(min_val - padding, max_val + padding)
         
-        # Because blit=False, we don't need to return the artists.
-        # However, it's good practice to do so for compatibility.
         return self.line1, self.line2, self.line3
 
     def on_closing(self):
