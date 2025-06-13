@@ -32,8 +32,8 @@ def run_training_pipeline():
         return
 
     print("\n--- Phase 2: Preprocessing and Segmentation ---")
-    all_processed_segments = []
-    all_corresponding_labels = []
+    # Change: Store segments, their labels, and subject IDs together
+    all_data_for_features = [] # List of (segment, glucose_val, subject_id) tuples
     files_processed_count = 0
     
     for file_idx, ppg_file_name in enumerate(all_raw_data_files):
@@ -72,8 +72,9 @@ def run_training_pipeline():
         segments_from_file = preprocessing.full_preprocess_pipeline(raw_signal)
         
         if segments_from_file:
-            all_processed_segments.extend(segments_from_file)
-            all_corresponding_labels.extend([glucose_val] * len(segments_from_file))
+            # Store segments, their glucose_val, and the subject_id
+            for segment in segments_from_file:
+                all_data_for_features.append((segment, glucose_val, lookup_key_for_label_map))
             files_processed_count +=1
             if file_idx < 5 or (file_idx + 1) % 10 == 0 : # Also print if segments were generated
                 print(f"    Generated {len(segments_from_file)} segments for {ppg_file_name} with glucose {glucose_val}")
@@ -83,54 +84,52 @@ def run_training_pipeline():
             pass
 
 
-    if not all_processed_segments:
-        print("No valid segments found after preprocessing all files. Exiting.")
+    if not all_data_for_features: # Check this new list
+        print("No valid data (segments with labels and subject IDs) found after preprocessing all files. Exiting.")
         return
         
     if files_processed_count == 0 :
         print("No files were successfully processed to generate segments. Exiting.")
         return
 
-    print(f"Total segments for feature extraction: {len(all_processed_segments)} from {files_processed_count} successfully processed files.")
-
-    # ... (rest of the main.py file, ensure it handles all_processed_segments and all_corresponding_labels)
+    print(f"Total entries for feature extraction: {len(all_data_for_features)} from {files_processed_count} successfully processed files.")
 
     print("\n--- Phase 3: Feature Extraction ---")
-    # ... (feature extraction logic remains the same, using all_processed_segments and all_corresponding_labels)
     feature_data_list = []
-    # Ensure that all_corresponding_labels is correctly populated and has same length potential as feature_data_list
-    valid_labels_for_features = []
+    labels_for_df = [] # Will be used to create labels_series
+    subject_ids_for_df = [] # New list to store subject IDs for each feature vector
 
-    for seg_idx, segment in enumerate(all_processed_segments):
-        if (seg_idx + 1) % 100 == 0: 
-            print(f"  Extracting features for segment {seg_idx + 1}/{len(all_processed_segments)}")
+    for idx, (segment, glucose_val, subject_id) in enumerate(all_data_for_features):
+        if (idx + 1) % 100 == 0: 
+            print(f"  Extracting features for entry {idx + 1}/{len(all_data_for_features)}")
         features = feature_extraction_new.extract_all_features_from_segment(segment, config.TARGET_FS)
         feature_data_list.append(features)
-        # This assumes all_corresponding_labels was populated correctly in sync with all_processed_segments
-        valid_labels_for_features.append(all_corresponding_labels[seg_idx]) 
+        labels_for_df.append(glucose_val)
+        subject_ids_for_df.append(subject_id)
     
     feature_df = pd.DataFrame(feature_data_list)
-    # Use the newly created valid_labels_for_features
-    labels_series = pd.Series(valid_labels_for_features)
+    labels_series = pd.Series(labels_for_df)
+    subject_ids_series = pd.Series(subject_ids_for_df) # New series for subject IDs
 
 
     if feature_df.isnull().values.any():
         print(f"  NaNs found in features (count: {feature_df.isnull().sum().sum()}). Example features with NaNs:")
         print(feature_df.isnull().sum()[feature_df.isnull().sum() > 0])
     
-    print(f"Feature extraction complete. Feature matrix shape: {feature_df.shape}, Labels series length: {len(labels_series)}")
+    print(f"Feature extraction complete. Feature matrix shape: {feature_df.shape}, Labels series length: {len(labels_series)}, Subject IDs series length: {len(subject_ids_series)}")
     if feature_df.empty:
         print("Feature matrix is empty. Cannot proceed to training. Check feature extraction logic.")
         return
-    if len(feature_df) != len(labels_series):
-        print(f"CRITICAL ERROR: Mismatch between number of feature sets ({len(feature_df)}) and labels ({len(labels_series)}). Exiting.")
+    if len(feature_df) != len(labels_series) or len(feature_df) != len(subject_ids_series):
+        print(f"CRITICAL ERROR: Mismatch between number of feature sets ({len(feature_df)}), labels ({len(labels_series)}), or subject IDs ({len(subject_ids_series)}). Exiting.")
         return
 
     print("\n--- Phase 4: Model Training and Evaluation ---")
-    # train_evaluate_model now returns the scaler as well
+    # Pass the new subject_ids_series to the model_trainer
     trained_model, fitted_scaler, eval_results, feature_names = model_trainer.train_evaluate_model(
         feature_df, 
         labels_series,
+        subject_ids_series, # Pass the subject IDs
         use_cv=False # Set to True to try K-Fold CV, ensure scaler logic is robust for CV if you do
     )
 
