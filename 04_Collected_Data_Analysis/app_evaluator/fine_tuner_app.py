@@ -9,11 +9,10 @@ import threading
 from datetime import datetime
 import joblib
 import lightgbm as lgb
-from sklearn.model_selection import GroupShuffleSplit, train_test_split
+from sklearn.model_selection import GroupShuffleSplit
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 # --- Dynamic Path and Module Setup ---
-# Ensures the script can find and import your custom modules from the Mendeley project.
 SCRIPTS_LOADED_SUCCESSFULLY = False
 config_mendeley, preprocessing_mendeley, feature_extraction_mendeley, model_trainer_mendeley = None, None, None, None
 
@@ -37,18 +36,23 @@ except Exception as e_path:
     print(f"Error setting up path for Mendeley scripts: {e_path}")
 
 
-# --- Integrated Fusion Functions ---
-def calculate_snr_for_segment(segment_array, fs):
-    if segment_array is None or len(segment_array) < 2: return 0.01
-    try:
-        signal_power = np.var(segment_array)
-        if len(segment_array) > 5:
-            std_diff2 = np.std(np.diff(np.diff(segment_array)))
-            noise_proxy_inv = 1.0 / (1.0 + std_diff2) if std_diff2 > 1e-9 else 1.0
-            snr = signal_power * noise_proxy_inv
-        else: snr = signal_power
-        return max(0.01, snr)
-    except Exception: return 0.01
+# --- Configuration ---
+class AppConfig:
+    HOLDOUT_TEST_SIZE = 0.2
+    FT_VALIDATION_SIZE = 0.25
+    RANDOM_STATE = 42
+    FT_PARAMS = {'learning_rate': 0.01, 'n_jobs': -1, 'seed': 42, 'verbose': -1}
+    FT_NUM_BOOST_ROUND = 200
+    FT_EARLY_STOPPING_ROUNDS = 25
+    INPUT_FS = 100
+    TARGET_FS_FEATURES = config_mendeley.TARGET_FS if SCRIPTS_LOADED_SUCCESSFULLY else 50
+
+# --- Helper Functions ---
+def calculate_mard(y_true, y_pred):
+    y_true, y_pred = np.array(y_true), np.array(y_pred)
+    mask = y_true != 0
+    if not np.any(mask): return np.nan
+    return np.mean(np.abs(y_true[mask] - y_pred[mask]) / y_true[mask]) * 100
 
 def calculate_sqi_for_segment(segment_array, fs):
     if segment_array is None or len(segment_array) < fs: return 0.0
@@ -64,52 +68,57 @@ def calculate_sqi_for_segment(segment_array, fs):
             ppi_values = np.diff(peaks) / fs
             ppi_mean = np.mean(ppi_values)
             ppi_std = np.std(ppi_values)
-            ppi_std_norm = ppi_std / ppi_mean if ppi_mean > 1e-9 else 1.0
-            return peak_to_peak_amplitude / (std_dev * (1 + ppi_std_norm))
-    except Exception: return 0.0
+            ppi_consistency_metric = 1 + (ppi_std / ppi_mean if ppi_mean > 1e-9 else 1.0)
+            return peak_to_peak_amplitude / (std_dev * ppi_consistency_metric)
+    except Exception as e:
+        print(f"Warning: Could not calculate SQI. Returning 0. Error: {e}")
+        return 0.0
 
-def fuse_features_snr_weighted(features, segments, fs):
+def calculate_snr_for_segment(segment_array, fs):
+    if segment_array is None or len(segment_array) < 2: return 0.01
+    try:
+        signal_power = np.var(segment_array)
+        if len(segment_array) > 5:
+            std_diff2 = np.std(np.diff(np.diff(segment_array)))
+            noise_proxy_inv = 1.0 / (1.0 + std_diff2) if std_diff2 > 1e-9 else 1.0
+            snr = signal_power * noise_proxy_inv
+        else:
+            snr = signal_power
+        return max(0.01, snr)
+    except Exception:
+        return 0.01
+
+def fuse_features_sqi_selected(features_per_finger, segments_per_finger, fs):
+    num_segments = len(segments_per_finger[0])
+    if num_segments == 0: return []
     fused_list = []
-    # FIX: Use an explicit check for non-empty lists/arrays to avoid ValueError
-    non_empty_features = [f for f in features if f is not None and len(f) > 0]
-    if not non_empty_features or not all(len(f) == len(segments[0]) for f in non_empty_features):
-        return []
-        
-    num_segments = len(segments[0])
     for i in range(num_segments):
-        snrs = [calculate_snr_for_segment(segs[i], fs) for segs in segments]
-        total_snr = sum(snrs)
-        weights = [snr / total_snr if total_snr > 1e-6 else 1/3 for snr in snrs]
-        
-        fused_features = np.zeros_like(features[0][i])
-        for finger_idx in range(len(features)):
-             if features[finger_idx] is not None and len(features[finger_idx]) > 0:
-                fused_features += weights[finger_idx] * np.array(features[finger_idx][i])
-        fused_list.append(fused_features.tolist())
+        sqis = [calculate_sqi_for_segment(segs[i], fs) for segs in segments_per_finger]
+        best_finger_idx = np.argmax(sqis)
+        fused_list.append(features_per_finger[best_finger_idx][i])
     return fused_list
 
-def fuse_features_sqi_selected(features, segments, fs):
+def fuse_features_snr_weighted(features_per_finger, segments_per_finger, fs):
+    num_segments = len(segments_per_finger[0])
+    if num_segments == 0: return []
     fused_list = []
-    # FIX: Use an explicit check for non-empty lists/arrays to avoid ValueError
-    non_empty_features = [f for f in features if f is not None and len(f) > 0]
-    if not non_empty_features or not all(len(f) == len(segments[0]) for f in non_empty_features):
-        return []
-
-    num_segments = len(segments[0])
     for i in range(num_segments):
-        sqis = [calculate_sqi_for_segment(segs[i], fs) for segs in segments]
-        best_finger_idx = np.argmax(sqis)
-        if features[best_finger_idx] is not None and len(features[best_finger_idx]) > i:
-             fused_list.append(features[best_finger_idx][i])
+        snrs = [calculate_snr_for_segment(segs[i], fs) for segs in segments_per_finger]
+        total_snr = sum(snrs)
+        weights = [snr / total_snr if total_snr > 1e-6 else 1/3 for snr in snrs]
+        fused_features = np.zeros_like(features_per_finger[0][i])
+        for finger_idx in range(len(features_per_finger)):
+            fused_features += weights[finger_idx] * np.array(features_per_finger[finger_idx][i])
+        fused_list.append(fused_features.tolist())
     return fused_list
 
 
 class FineTunerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Model Fine-Tuning & Final Evaluation")
-        self.root.withdraw() # Hide window initially
-        self.root.geometry("650x600")
+        self.root.title("Model Fine-Tuning & Final Evaluation (Group-Split)")
+        self.root.withdraw()
+        self.root.geometry("750x650")
 
         self.project_root = project_root
         self.mendeley_model_dir = os.path.join(self.project_root, "02_Machine_Learning_Mendeley", "src", "models")
@@ -122,25 +131,20 @@ class FineTunerApp:
 
         self._setup_gui()
         self._load_pretrained_artifacts()
-        self._center_window() # Center the window
-        self.root.deiconify() # Show the centered window
+        self._center_window()
+        self.root.deiconify()
 
     def _center_window(self):
-        """Centers the main window on the user's screen."""
         self.root.update_idletasks()
-        width = self.root.winfo_width()
-        height = self.root.winfo_height()
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-        x = (screen_width // 2) - (width // 2)
-        y = (screen_height // 2) - (height // 2)
+        width, height = self.root.winfo_width(), self.root.winfo_height()
+        x = (self.root.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.root.winfo_screenheight() // 2) - (height // 2)
         self.root.geometry(f'{width}x{height}+{x}+{y}')
 
     def _setup_gui(self):
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
         main_frame.columnconfigure(0, weight=1)
-
         info_frame = ttk.LabelFrame(main_frame, text="Pipeline Configuration", padding="10")
         info_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         info_frame.columnconfigure(1, weight=1)
@@ -148,24 +152,19 @@ class FineTunerApp:
         ttk.Label(info_frame, text="lgbm_glucose_model_retrained_v1.txt", font="TkDefaultFont 9 italic").grid(row=0, column=1, sticky="w")
         ttk.Label(info_frame, text="Custom Data Source:").grid(row=1, column=0, sticky="w", padx=5)
         ttk.Label(info_frame, text=self.custom_data_dir, font="TkDefaultFont 9 italic", wraplength=450).grid(row=1, column=1, sticky="w")
-        
-        # --- Control Frame for Centered Button ---
         control_frame = ttk.Frame(main_frame)
         control_frame.grid(row=1, column=0, sticky="ew", pady=10)
         control_frame.columnconfigure(0, weight=1)
-        
         self.process_button = ttk.Button(control_frame, text="Start Fine-Tuning & Evaluation", command=self._start_processing_thread)
         self.process_button.pack(pady=5, ipady=5)
-
-        results_frame = ttk.LabelFrame(main_frame, text="Final Fine-Tuned Model Performance (on Hold-Out Test Set)", padding="10")
+        results_frame = ttk.LabelFrame(main_frame, text="Final Model Performance (on Hold-Out Test Set)", padding="10")
         results_frame.grid(row=2, column=0, sticky="nsew", pady=5)
-        results_frame.columnconfigure(0, weight=1)
-        results_frame.rowconfigure(0, weight=1)
+        results_frame.columnconfigure(0, weight=1); results_frame.rowconfigure(0, weight=1)
         
         self.results_cols = ["Approach", "Avg. mARD (%)", "Avg. RMSE (mg/dL)", "Avg. MAE (mg/dL)"]
-        self.results_tree = ttk.Treeview(results_frame, columns=self.results_cols, show="headings", height=5)
+        self.results_tree = ttk.Treeview(results_frame, columns=self.results_cols, show="headings", height=6)
         
-        col_widths = {"Approach": 200, "Avg. mARD (%)": 120, "Avg. RMSE (mg/dL)": 120, "Avg. MAE (mg/dL)": 120}
+        col_widths = {"Approach": 200, "Avg. mARD (%)": 130, "Avg. RMSE (mg/dL)": 140, "Avg. MAE (mg/dL)": 130}
         for col in self.results_cols:
             self.results_tree.heading(col, text=col)
             self.results_tree.column(col, anchor='center', width=col_widths.get(col, 120), minwidth=100)
@@ -175,7 +174,7 @@ class FineTunerApp:
         log_frame = ttk.LabelFrame(main_frame, text="Processing Log", padding="5")
         log_frame.grid(row=3, column=0, sticky="ew", pady=(10,0))
         log_frame.columnconfigure(0, weight=1)
-        self.log_text = tk.Text(log_frame, height=8, state=tk.DISABLED, wrap=tk.WORD, relief=tk.SUNKEN, borderwidth=1)
+        self.log_text = tk.Text(log_frame, height=10, state=tk.DISABLED, wrap=tk.WORD, relief=tk.SUNKEN, borderwidth=1)
         self.log_text.grid(row=0, column=0, sticky="ew")
 
         main_frame.rowconfigure(2, weight=1)
@@ -190,20 +189,13 @@ class FineTunerApp:
         self.log_text.config(state=tk.DISABLED)
 
     def _load_pretrained_artifacts(self):
-        if not SCRIPTS_LOADED_SUCCESSFULLY:
-            self._log_message("ERROR: Core processing scripts failed to import.")
-            return
+        if not SCRIPTS_LOADED_SUCCESSFULLY: self._log_message("ERROR: Core processing scripts failed to import."); return
         try:
-            model_name = "lgbm_glucose_model_retrained_v1.txt"
-            scaler_name = "mendeley_feature_scaler_retrained_v1.pkl"
-            features_name = "model_features_retrained_v1.json"
+            model_name, scaler_name, features_name = "lgbm_glucose_model_retrained_v1.txt", "mendeley_feature_scaler_retrained_v1.pkl", "model_features_retrained_v1.json"
             self.pretrained_model, self.scaler, self.expected_feature_order = model_trainer_mendeley.load_model_scaler_and_features(
-                self.mendeley_model_dir, model_name, scaler_name, features_name
-            )
-            if self.pretrained_model and self.scaler:
-                self._log_message("Successfully loaded pre-trained model and scaler.")
-            else:
-                raise FileNotFoundError("Pre-trained model or scaler not found.")
+                self.mendeley_model_dir, model_name, scaler_name, features_name)
+            if self.pretrained_model and self.scaler: self._log_message("Successfully loaded pre-trained model and scaler.")
+            else: raise FileNotFoundError("Pre-trained model or scaler not found.")
         except Exception as e:
             self._log_message(f"CRITICAL ERROR loading artifacts: {e}")
             messagebox.showerror("Model Load Error", f"Failed to load artifacts from '{self.mendeley_model_dir}'.\n\nError: {e}")
@@ -218,137 +210,136 @@ class FineTunerApp:
 
     def _run_pipeline(self):
         try:
-            # --- Phase 1: Load and Process ALL Custom Data ---
+            # === Phase 1: Load and Process ALL Custom Data into a unified DataFrame ===
             self._log_message("Phase 1: Loading and processing all custom data...")
             labels_df = pd.read_csv(os.path.join(self.custom_data_dir, "Labels", "collected_labels.csv"))
             raw_data_path = os.path.join(self.custom_data_dir, "RawData")
-            
-            all_participant_data = []
+            all_feature_rows = []
             for _, row in labels_df.iterrows():
-                sample_id = f"{row['ID']}_{row['Sample_Num']}"
-                ppg_filepath = os.path.join(raw_data_path, f"{sample_id}_ppg.csv")
+                ppg_filepath = os.path.join(raw_data_path, f"{row['ID']}_{row['Sample_Num']}_ppg.csv")
                 if not os.path.exists(ppg_filepath): continue
-
+                
                 ppg_df = pd.read_csv(ppg_filepath)
                 signals = [pd.to_numeric(ppg_df[f'ppg_finger{i+1}'], errors='coerce').dropna().to_numpy() for i in range(3)]
                 
-                segments_per_finger = [preprocessing_mendeley.full_preprocess_pipeline(s, use_mendeley_fs=False, custom_fs=100) for s in signals]
-                
-                if not segments_per_finger or not all(len(s) == len(segments_per_finger[0]) for s in segments_per_finger if s): continue
-                
-                features_per_finger = []
-                for segs in segments_per_finger:
-                    if not segs:
-                        features_per_finger.append([])
-                        continue
-                    features = [feature_extraction_mendeley.extract_all_features_from_segment(s, config_mendeley.TARGET_FS) for s in segs]
-                    ordered_df = pd.DataFrame(features)[self.expected_feature_order]
-                    features_per_finger.append(self.scaler.transform(ordered_df))
+                segments_per_finger = [preprocessing_mendeley.full_preprocess_pipeline(s, use_mendeley_fs=False, custom_fs=AppConfig.INPUT_FS) for s in signals]
+                if not any(segments_per_finger) or not all(len(s) == len(segments_per_finger[0]) for s in segments_per_finger if s): continue
+                num_segments = len(segments_per_finger[0])
+                if num_segments == 0: continue
 
-                all_participant_data.append({
-                    "id": row['ID'],
-                    "actual_glucose": row['Glucose_mgdL'],
-                    "features_scaled": features_per_finger,
-                    "segments": segments_per_finger
-                })
-            self._log_message(f"Successfully processed data for {len(all_participant_data)} participants.")
+                features_f1 = [feature_extraction_mendeley.extract_all_features_from_segment(s, AppConfig.TARGET_FS_FEATURES) for s in segments_per_finger[0]]
+                features_f2 = [feature_extraction_mendeley.extract_all_features_from_segment(s, AppConfig.TARGET_FS_FEATURES) for s in segments_per_finger[1]]
+                features_f3 = [feature_extraction_mendeley.extract_all_features_from_segment(s, AppConfig.TARGET_FS_FEATURES) for s in segments_per_finger[2]]
 
-            # --- Phase 2: Split data by participant ---
-            self._log_message("Phase 2: Splitting participants into fine-tuning and hold-out test sets...")
-            participant_ids = np.unique([p['id'] for p in all_participant_data])
-            if len(participant_ids) < 2:
-                self._log_message("Not enough participants for a train/test split. Aborting."); return
-
-            train_ids, test_ids = train_test_split(participant_ids, test_size=0.2, random_state=42)
-            train_data = [p for p in all_participant_data if p['id'] in train_ids]
-            test_data = [p for p in all_participant_data if p['id'] in test_ids]
-            self._log_message(f"Data split: {len(train_ids)} participants for tuning, {len(test_ids)} for final testing.")
-
-            # --- Phase 3: Prepare training data (using best fusion method) and fine-tune ---
-            self._log_message("Phase 3: Preparing fused data and fine-tuning model...")
-            X_train_list, y_train_list = [], []
-            for p_data in train_data:
-                fused_features = fuse_features_sqi_selected(p_data['features_scaled'], p_data['segments'], config_mendeley.TARGET_FS)
-                if fused_features:
-                    X_train_list.extend(fused_features)
-                    y_train_list.extend([p_data['actual_glucose']] * len(fused_features))
-
-            if not X_train_list:
-                self._log_message("No training data generated after fusion. Aborting."); return
-
-            ft_params = self.pretrained_model.params.copy()
-            ft_params['learning_rate'] = 0.01
-            
-            fine_tuned_model = lgb.train(
-                ft_params, lgb.Dataset(pd.DataFrame(X_train_list), label=pd.Series(y_train_list)),
-                num_boost_round=150, init_model=self.pretrained_model
-            )
-            self._log_message("Fine-tuning complete.")
-            
-            # --- Phase 4: Evaluate fine-tuned model on ALL approaches on the test set ---
-            self._log_message("Phase 4: Evaluating fine-tuned model on hold-out test set...")
-            detailed_log = []
-            
-            for p_data in test_data:
-                actual_glucose = p_data['actual_glucose']
-                
-                features_sets = {
-                    "Index Finger": p_data['features_scaled'][0],
-                    "Middle Finger": p_data['features_scaled'][1],
-                    "Ring Finger": p_data['features_scaled'][2],
-                    "SNR-Weighted Fusion": fuse_features_snr_weighted(p_data['features_scaled'], p_data['segments'], config_mendeley.TARGET_FS),
-                    "SQI-Selected Fusion": fuse_features_sqi_selected(p_data['features_scaled'], p_data['segments'], config_mendeley.TARGET_FS)
-                }
-
-                for approach, features in features_sets.items():
-                    if len(features) == 0: continue
-                    preds = fine_tuned_model.predict(features)
-                    detailed_log.append({
-                        "ParticipantID": p_data['id'],
-                        "Approach": approach,
-                        "ActualGlucose": actual_glucose,
-                        "PredictedGlucose": np.mean(preds),
-                        "mARD(%)": np.mean(np.abs(preds - actual_glucose) / actual_glucose) * 100,
-                        "RMSE(mg/dL)": np.sqrt(mean_squared_error([actual_glucose] * len(preds), preds)),
-                        "MAE(mg/dL)": mean_absolute_error([actual_glucose] * len(preds), preds)
+                for i in range(num_segments):
+                    all_feature_rows.append({
+                        "subject_id": row['ID'], "glucose": row['Glucose_mgdL'],
+                        "features_f1": [features_f1[i].get(feat, np.nan) for feat in self.expected_feature_order],
+                        "features_f2": [features_f2[i].get(feat, np.nan) for feat in self.expected_feature_order],
+                        "features_f3": [features_f3[i].get(feat, np.nan) for feat in self.expected_feature_order],
+                        "segment_f1": segments_per_finger[0][i], "segment_f2": segments_per_finger[1][i], "segment_f3": segments_per_finger[2][i]
                     })
             
-            # --- Phase 5: Aggregate results and update GUI ---
-            self._log_message("Phase 5: Aggregating final results...")
-            log_df = pd.DataFrame(detailed_log)
-            
-            output_csv_path = os.path.join(self.output_dir, "fine_tuned_model_evaluation_log.csv")
-            log_df.to_csv(output_csv_path, index=False)
-            self._log_message(f"Detailed log saved to:\n{output_csv_path}")
+            if not all_feature_rows: self._log_message("No data processed, aborting."); return
+            master_df = pd.DataFrame(all_feature_rows)
+            self._log_message(f"Successfully processed {len(master_df)} total segments from {master_df['subject_id'].nunique()} participants.")
 
-            avg_results = log_df.groupby('Approach').agg({
-                'mARD(%)': 'mean',
-                'RMSE(mg/dL)': 'mean',
-                'MAE(mg/dL)': 'mean'
-            }).reset_index()
-            
-            display_data = []
-            for _, row in avg_results.iterrows():
-                display_data.append([row['Approach'], f"{row['mARD(%)']:.2f}", f"{row['RMSE(mg/dL)']:.2f}", f"{row['MAE(mg/dL)']:.2f}"])
-            
-            self.root.after(0, self._update_results_display, display_data)
-            self._log_message("\n--- Pipeline Finished Successfully ---")
+            # === Phase 2: Split data by participant ===
+            self._log_message("\nPhase 2: Splitting participants into Fine-Tuning and Hold-Out sets...")
+            holdout_splitter = GroupShuffleSplit(n_splits=1, test_size=AppConfig.HOLDOUT_TEST_SIZE, random_state=AppConfig.RANDOM_STATE)
+            ft_pool_indices, holdout_indices = next(holdout_splitter.split(master_df, groups=master_df['subject_id']))
+            ft_pool_df, holdout_df = master_df.iloc[ft_pool_indices], master_df.iloc[holdout_indices]
+            self._log_message(f"  - Hold-Out Subjects ({holdout_df['subject_id'].nunique()}): {sorted(holdout_df['subject_id'].unique())}")
 
+            ft_splitter = GroupShuffleSplit(n_splits=1, test_size=AppConfig.FT_VALIDATION_SIZE, random_state=AppConfig.RANDOM_STATE)
+            train_indices, valid_indices = next(ft_splitter.split(ft_pool_df, groups=ft_pool_df['subject_id']))
+            train_df, valid_df = ft_pool_df.iloc[train_indices], ft_pool_df.iloc[valid_indices]
+            self._log_message(f"  - Fine-Tuning Train Subjects ({train_df['subject_id'].nunique()}): {sorted(train_df['subject_id'].unique())}")
+            self._log_message(f"  - Fine-Tuning Valid Subjects ({valid_df['subject_id'].nunique()}): {sorted(valid_df['subject_id'].unique())}")
+
+            # === Phase 3: Prepare training data and fine-tune ===
+            self._log_message("\nPhase 3: Preparing fused data and fine-tuning model...")
+            X_train_fused = fuse_features_sqi_selected(
+                [train_df['features_f1'].tolist(), train_df['features_f2'].tolist(), train_df['features_f3'].tolist()],
+                [train_df['segment_f1'].tolist(), train_df['segment_f2'].tolist(), train_df['segment_f3'].tolist()],
+                AppConfig.TARGET_FS_FEATURES)
+            X_train = pd.DataFrame(X_train_fused, columns=self.expected_feature_order).fillna(0)
+            y_train = train_df['glucose']
+            X_valid_fused = fuse_features_sqi_selected(
+                [valid_df['features_f1'].tolist(), valid_df['features_f2'].tolist(), valid_df['features_f3'].tolist()],
+                [valid_df['segment_f1'].tolist(), valid_df['segment_f2'].tolist(), valid_df['segment_f3'].tolist()],
+                AppConfig.TARGET_FS_FEATURES)
+            X_valid, y_valid = pd.DataFrame(X_valid_fused, columns=self.expected_feature_order).fillna(0), valid_df['glucose']
+
+            lgb_train = lgb.Dataset(self.scaler.transform(X_train), label=y_train)
+            lgb_valid = lgb.Dataset(self.scaler.transform(X_valid), label=y_valid, reference=lgb_train)
+            fine_tuned_model = lgb.train(AppConfig.FT_PARAMS, lgb_train, valid_sets=[lgb_valid], valid_names=['validation'],
+                                         num_boost_round=AppConfig.FT_NUM_BOOST_ROUND,
+                                         callbacks=[lgb.early_stopping(AppConfig.FT_EARLY_STOPPING_ROUNDS, verbose=True), lgb.log_evaluation(50)],
+                                         init_model=self.pretrained_model)
+            self._log_message("Fine-tuning complete.")
+            
+            # === Phase 4: Evaluate fine-tuned model on the HOLD-OUT test set ===
+            self._log_message("\nPhase 4: Evaluating fine-tuned model on hold-out test set...")
+            final_results = []
+            approaches_to_test = ["Index Finger", "Middle Finger", "Ring Finger", "SNR-Weighted Fusion", "SQI-Selected Fusion"]
+            
+            # FIX: Define debug_subject_id before the loop
+            debug_subject_id = holdout_df['subject_id'].unique()[0] if len(holdout_df['subject_id'].unique()) > 0 else None
+
+            for approach in approaches_to_test:
+                y_true_agg, y_pred_agg = [], []
+                for subject_id in holdout_df['subject_id'].unique():
+                    subject_data = holdout_df[holdout_df['subject_id'] == subject_id]
+                    y_true, features = subject_data['glucose'].iloc[0], None
+                    
+                    features_all_fingers = [subject_data[f'features_f{i+1}'].tolist() for i in range(3)]
+                    segments_all_fingers = [subject_data[f'segment_f{i+1}'].tolist() for i in range(3)]
+
+                    if approach == "SQI-Selected Fusion":
+                        features = fuse_features_sqi_selected(features_all_fingers, segments_all_fingers, AppConfig.TARGET_FS_FEATURES)
+                    elif approach == "SNR-Weighted Fusion":
+                        features = fuse_features_snr_weighted(features_all_fingers, segments_all_fingers, AppConfig.TARGET_FS_FEATURES)
+                    else:
+                        finger_map = {"Index": "1", "Middle": "2", "Ring": "3"}
+                        finger_name = approach.split(' ')[0]
+                        f_key = f"features_f{finger_map[finger_name]}"
+                        features = subject_data[f_key].tolist()
+
+                    if not features: continue
+                    
+                    if subject_id == debug_subject_id:
+                        self._log_message(f"--- DEBUGGING FOR SUBJECT {subject_id}, APPROACH: {approach} ---")
+                        if features:
+                             self._log_message(f"  Input Features (first segment): {[f'{x:.4f}' for x in features[0]]}")
+
+                    X_test = self.scaler.transform(pd.DataFrame(features, columns=self.expected_feature_order).fillna(0))
+                    preds = fine_tuned_model.predict(X_test, num_iteration=fine_tuned_model.best_iteration)
+                    
+                    if subject_id == debug_subject_id:
+                        self._log_message(f"  Prediction Result: {np.mean(preds):.4f}")
+                    
+                    y_true_agg.append(y_true); y_pred_agg.append(np.mean(preds))
+
+                if not y_true_agg: continue
+                
+                mard = calculate_mard(y_true_agg, y_pred_agg)
+                rmse = np.sqrt(mean_squared_error(y_true_agg, y_pred_agg))
+                mae = mean_absolute_error(y_true_agg, y_pred_agg)
+                
+                final_results.append([approach, f"{mard:.2f}", f"{rmse:.2f}", f"{mae:.2f}"])
+            
+            # === Phase 5: Aggregate results and update GUI with specific order ===
+            self._log_message("\n--- Final Results on Unseen Data ---")
+            display_order = {name: i for i, name in enumerate(approaches_to_test)}
+            sorted_results = sorted(final_results, key=lambda r: display_order.get(r[0], 99))
+            self.root.after(0, self._update_results_display, sorted_results)
+            
             self._log_message("Saving the fine-tuned model...")
-            
-            # Define a directory for your new models if it doesn't exist
-            fine_tuned_model_dir = os.path.join(self.project_root, "04_Collected_Data_Analysis", "models_finetuned")
-            if not os.path.exists(fine_tuned_model_dir):
-                os.makedirs(fine_tuned_model_dir)
-
-            # Create a descriptive filename
-            num_subjects = len(train_ids) # Using the number of participants in the tuning set
-            model_filename = f"lgbm_model_finetuned_on_{num_subjects}subjects.txt"
-            model_save_path = os.path.join(fine_tuned_model_dir, model_filename)
-
-            # Save the model
+            model_filename = f"lgbm_model_finetuned_on_{master_df['subject_id'].nunique()}subjects.txt"
+            model_save_path = os.path.join(self.output_dir, model_filename)
             fine_tuned_model.save_model(model_save_path)
-            self._log_message(f"Fine-tuned model successfully saved to:\n{model_save_path}")
+            self._log_message(f"Model saved to: {model_save_path}")
 
         except Exception as e:
             import traceback
@@ -361,14 +352,14 @@ class FineTunerApp:
 
     def _update_results_display(self, results_list):
         for i in self.results_tree.get_children(): self.results_tree.delete(i)
-        for row in sorted(results_list, key=lambda x: x[0]):
+        for row in results_list:
             self.results_tree.insert("", tk.END, values=row)
 
 if __name__ == '__main__':
     if not SCRIPTS_LOADED_SUCCESSFULLY:
         root = tk.Tk()
         root.withdraw()
-        messagebox.showerror("Initialization Error", "Failed to load critical modules.")
+        messagebox.showerror("Initialization Error", "Failed to load critical modules from the Mendeley project directory. Please check file paths and dependencies.")
     else:
         root = ThemedTk(theme="arc")
         app = FineTunerApp(root)
