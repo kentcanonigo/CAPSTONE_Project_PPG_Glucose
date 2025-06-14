@@ -1,0 +1,6 @@
+Approach,Avg. mARD (%),Avg. RMSE (mg/dL),Avg. MAE (mg/dL)
+Index Finger,7.32,9.01,7.08
+Middle Finger,8.06,9.64,7.82
+Ring Finger,7.99,9.55,7.75
+SNR-Weighted Fusion,7.59,9.36,7.34
+SQI-Selected Fusion,7.69,9.45,7.44
