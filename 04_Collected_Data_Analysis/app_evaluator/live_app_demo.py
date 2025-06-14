@@ -262,7 +262,7 @@ class LiveDemoApp:
             self.root.after(0, lambda: self.accuracy_button.config(state=tk.NORMAL))
 
     def _update_prediction_results(self):
-        """Displays only the predicted values in the results table."""
+        """Displays the predicted values for each approach in the results table."""
         for i in self.results_tree.get_children(): self.results_tree.delete(i)
         
         self.results_tree.config(height=5)
@@ -270,16 +270,29 @@ class LiveDemoApp:
         def format_val(val, precision=2):
             return f"{val:.{precision}f}" if pd.notna(val) else "N/A"
         
-        for i, pred in enumerate(self.predicted_fingers):
-            values = [f"Finger {i+1} Only", format_val(pred), "N/A", "N/A", "N/A"]
-            self.tree_item_ids[f'F{i+1}'] = self.results_tree.insert("", "end", values=values)
-            
-        # Insert SQI results
-        sqi_values = ["SQI-Selected Fusion", format_val(self.predicted_sqi), "N/A", "N/A", "N/A"]
+        # A single, clear dictionary for all display names
+        method_display_names = {
+            'F1': "Index Finger",
+            'F2': "Middle Finger",
+            'F3': "Ring Finger",
+            'SQI': "SQI-Selected Fusion",
+            'SNR': "SNR-Weighted Fusion"
+        }
+
+        # --- This single block now correctly adds all rows ---
+
+        # Add the finger results
+        if self.predicted_fingers:
+            for i, key in enumerate(['F1', 'F2', 'F3']):
+                pred = self.predicted_fingers[i]
+                values = [method_display_names[key], format_val(pred), "N/A", "N/A", "N/A"]
+                self.tree_item_ids[key] = self.results_tree.insert("", "end", values=values)
+        
+        # Add the fusion results
+        sqi_values = [method_display_names['SQI'], format_val(self.predicted_sqi), "N/A", "N/A", "N/A"]
         self.tree_item_ids['SQI'] = self.results_tree.insert("", "end", values=sqi_values)
         
-        # Insert SNR results
-        snr_values = ["SNR-Weighted Fusion", format_val(self.predicted_snr), "N/A", "N/A", "N/A"]
+        snr_values = [method_display_names['SNR'], format_val(self.predicted_snr), "N/A", "N/A", "N/A"]
         self.tree_item_ids['SNR'] = self.results_tree.insert("", "end", values=snr_values)
 
         self._log("-> Prediction results displayed.")
@@ -338,7 +351,7 @@ class LiveDemoApp:
 
         # 3. Update the Treeview, applying the tag ONLY to the best method(s)
         method_display_names = {
-            'F1': "Finger 1 Only", 'F2': "Finger 2 Only", 'F3': "Finger 3 Only",
+            'F1': "Index Finger", 'F2': "Middle Finger", 'F3': "Ring Finger",
             'SQI': "SQI-Selected Fusion", 'SNR': "SNR-Weighted Fusion"
         }
 
