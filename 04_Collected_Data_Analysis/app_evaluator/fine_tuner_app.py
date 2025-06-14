@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox
 from ttkthemes import ThemedTk
 import pandas as pd
 import numpy as np
@@ -40,7 +40,7 @@ except Exception as e_path:
 class AppConfig:
     HOLDOUT_TEST_SIZE = 0.2
     FT_VALIDATION_SIZE = 0.25
-    RANDOM_STATE = 42
+    RANDOM_STATE = 43
     FT_PARAMS = {'learning_rate': 0.01, 'n_jobs': -1, 'seed': 42, 'verbose': -1}
     FT_NUM_BOOST_ROUND = 200
     FT_EARLY_STOPPING_ROUNDS = 25
@@ -78,15 +78,9 @@ def calculate_snr_for_segment(segment_array, fs):
     if segment_array is None or len(segment_array) < 2: return 0.01
     try:
         signal_power = np.var(segment_array)
-        if len(segment_array) > 5:
-            std_diff2 = np.std(np.diff(np.diff(segment_array)))
-            noise_proxy_inv = 1.0 / (1.0 + std_diff2) if std_diff2 > 1e-9 else 1.0
-            snr = signal_power * noise_proxy_inv
-        else:
-            snr = signal_power
+        snr = signal_power * (1.0 / (1.0 + np.std(np.diff(np.diff(segment_array))))) if len(segment_array) > 5 else signal_power
         return max(0.01, snr)
-    except Exception:
-        return 0.01
+    except Exception: return 0.01
 
 def fuse_features_sqi_selected(features_per_finger, segments_per_finger, fs):
     num_segments = len(segments_per_finger[0])
@@ -210,7 +204,6 @@ class FineTunerApp:
 
     def _run_pipeline(self):
         try:
-            # === Phase 1: Load and Process ALL Custom Data into a unified DataFrame ===
             self._log_message("Phase 1: Loading and processing all custom data...")
             labels_df = pd.read_csv(os.path.join(self.custom_data_dir, "Labels", "collected_labels.csv"))
             raw_data_path = os.path.join(self.custom_data_dir, "RawData")
@@ -218,19 +211,15 @@ class FineTunerApp:
             for _, row in labels_df.iterrows():
                 ppg_filepath = os.path.join(raw_data_path, f"{row['ID']}_{row['Sample_Num']}_ppg.csv")
                 if not os.path.exists(ppg_filepath): continue
-                
                 ppg_df = pd.read_csv(ppg_filepath)
                 signals = [pd.to_numeric(ppg_df[f'ppg_finger{i+1}'], errors='coerce').dropna().to_numpy() for i in range(3)]
-                
                 segments_per_finger = [preprocessing_mendeley.full_preprocess_pipeline(s, use_mendeley_fs=False, custom_fs=AppConfig.INPUT_FS) for s in signals]
                 if not any(segments_per_finger) or not all(len(s) == len(segments_per_finger[0]) for s in segments_per_finger if s): continue
                 num_segments = len(segments_per_finger[0])
                 if num_segments == 0: continue
-
                 features_f1 = [feature_extraction_mendeley.extract_all_features_from_segment(s, AppConfig.TARGET_FS_FEATURES) for s in segments_per_finger[0]]
                 features_f2 = [feature_extraction_mendeley.extract_all_features_from_segment(s, AppConfig.TARGET_FS_FEATURES) for s in segments_per_finger[1]]
                 features_f3 = [feature_extraction_mendeley.extract_all_features_from_segment(s, AppConfig.TARGET_FS_FEATURES) for s in segments_per_finger[2]]
-
                 for i in range(num_segments):
                     all_feature_rows.append({
                         "subject_id": row['ID'], "glucose": row['Glucose_mgdL'],
@@ -239,38 +228,34 @@ class FineTunerApp:
                         "features_f3": [features_f3[i].get(feat, np.nan) for feat in self.expected_feature_order],
                         "segment_f1": segments_per_finger[0][i], "segment_f2": segments_per_finger[1][i], "segment_f3": segments_per_finger[2][i]
                     })
-            
             if not all_feature_rows: self._log_message("No data processed, aborting."); return
             master_df = pd.DataFrame(all_feature_rows)
             self._log_message(f"Successfully processed {len(master_df)} total segments from {master_df['subject_id'].nunique()} participants.")
 
-            # === Phase 2: Split data by participant ===
             self._log_message("\nPhase 2: Splitting participants into Fine-Tuning and Hold-Out sets...")
             holdout_splitter = GroupShuffleSplit(n_splits=1, test_size=AppConfig.HOLDOUT_TEST_SIZE, random_state=AppConfig.RANDOM_STATE)
             ft_pool_indices, holdout_indices = next(holdout_splitter.split(master_df, groups=master_df['subject_id']))
             ft_pool_df, holdout_df = master_df.iloc[ft_pool_indices], master_df.iloc[holdout_indices]
             self._log_message(f"  - Hold-Out Subjects ({holdout_df['subject_id'].nunique()}): {sorted(holdout_df['subject_id'].unique())}")
-
             ft_splitter = GroupShuffleSplit(n_splits=1, test_size=AppConfig.FT_VALIDATION_SIZE, random_state=AppConfig.RANDOM_STATE)
             train_indices, valid_indices = next(ft_splitter.split(ft_pool_df, groups=ft_pool_df['subject_id']))
             train_df, valid_df = ft_pool_df.iloc[train_indices], ft_pool_df.iloc[valid_indices]
             self._log_message(f"  - Fine-Tuning Train Subjects ({train_df['subject_id'].nunique()}): {sorted(train_df['subject_id'].unique())}")
             self._log_message(f"  - Fine-Tuning Valid Subjects ({valid_df['subject_id'].nunique()}): {sorted(valid_df['subject_id'].unique())}")
 
-            # === Phase 3: Prepare training data and fine-tune ===
-            self._log_message("\nPhase 3: Preparing fused data and fine-tuning model...")
-            X_train_fused = fuse_features_sqi_selected(
-                [train_df['features_f1'].tolist(), train_df['features_f2'].tolist(), train_df['features_f3'].tolist()],
-                [train_df['segment_f1'].tolist(), train_df['segment_f2'].tolist(), train_df['segment_f3'].tolist()],
-                AppConfig.TARGET_FS_FEATURES)
-            X_train = pd.DataFrame(X_train_fused, columns=self.expected_feature_order).fillna(0)
-            y_train = train_df['glucose']
-            X_valid_fused = fuse_features_sqi_selected(
-                [valid_df['features_f1'].tolist(), valid_df['features_f2'].tolist(), valid_df['features_f3'].tolist()],
-                [valid_df['segment_f1'].tolist(), valid_df['segment_f2'].tolist(), valid_df['segment_f3'].tolist()],
-                AppConfig.TARGET_FS_FEATURES)
-            X_valid, y_valid = pd.DataFrame(X_valid_fused, columns=self.expected_feature_order).fillna(0), valid_df['glucose']
-
+            self._log_message("\nPhase 3: Preparing combined data from all fingers for robust fine-tuning...")
+            X_train_f1 = pd.DataFrame(train_df['features_f1'].tolist(), columns=self.expected_feature_order)
+            X_train_f2 = pd.DataFrame(train_df['features_f2'].tolist(), columns=self.expected_feature_order)
+            X_train_f3 = pd.DataFrame(train_df['features_f3'].tolist(), columns=self.expected_feature_order)
+            X_train = pd.concat([X_train_f1, X_train_f2, X_train_f3], ignore_index=True).fillna(0)
+            y_train = pd.concat([train_df['glucose']] * 3, ignore_index=True)
+            X_valid_f1 = pd.DataFrame(valid_df['features_f1'].tolist(), columns=self.expected_feature_order)
+            X_valid_f2 = pd.DataFrame(valid_df['features_f2'].tolist(), columns=self.expected_feature_order)
+            X_valid_f3 = pd.DataFrame(valid_df['features_f3'].tolist(), columns=self.expected_feature_order)
+            X_valid = pd.concat([X_valid_f1, X_valid_f2, X_valid_f3], ignore_index=True).fillna(0)
+            y_valid = pd.concat([valid_df['glucose']] * 3, ignore_index=True)
+            self._log_message(f"  - Total training feature sets (3 fingers combined): {len(X_train)}")
+            
             lgb_train = lgb.Dataset(self.scaler.transform(X_train), label=y_train)
             lgb_valid = lgb.Dataset(self.scaler.transform(X_valid), label=y_valid, reference=lgb_train)
             fine_tuned_model = lgb.train(AppConfig.FT_PARAMS, lgb_train, valid_sets=[lgb_valid], valid_names=['validation'],
@@ -279,23 +264,16 @@ class FineTunerApp:
                                          init_model=self.pretrained_model)
             self._log_message("Fine-tuning complete.")
             
-            # === Phase 4: Evaluate fine-tuned model on the HOLD-OUT test set ===
             self._log_message("\nPhase 4: Evaluating fine-tuned model on hold-out test set...")
             final_results = []
             approaches_to_test = ["Index Finger", "Middle Finger", "Ring Finger", "SNR-Weighted Fusion", "SQI-Selected Fusion"]
-            
-            # FIX: Define debug_subject_id before the loop
-            debug_subject_id = holdout_df['subject_id'].unique()[0] if len(holdout_df['subject_id'].unique()) > 0 else None
-
             for approach in approaches_to_test:
                 y_true_agg, y_pred_agg = [], []
                 for subject_id in holdout_df['subject_id'].unique():
                     subject_data = holdout_df[holdout_df['subject_id'] == subject_id]
                     y_true, features = subject_data['glucose'].iloc[0], None
-                    
                     features_all_fingers = [subject_data[f'features_f{i+1}'].tolist() for i in range(3)]
                     segments_all_fingers = [subject_data[f'segment_f{i+1}'].tolist() for i in range(3)]
-
                     if approach == "SQI-Selected Fusion":
                         features = fuse_features_sqi_selected(features_all_fingers, segments_all_fingers, AppConfig.TARGET_FS_FEATURES)
                     elif approach == "SNR-Weighted Fusion":
@@ -305,38 +283,29 @@ class FineTunerApp:
                         finger_name = approach.split(' ')[0]
                         f_key = f"features_f{finger_map[finger_name]}"
                         features = subject_data[f_key].tolist()
-
                     if not features: continue
-                    
-                    if subject_id == debug_subject_id:
-                        self._log_message(f"--- DEBUGGING FOR SUBJECT {subject_id}, APPROACH: {approach} ---")
-                        if features:
-                             self._log_message(f"  Input Features (first segment): {[f'{x:.4f}' for x in features[0]]}")
-
                     X_test = self.scaler.transform(pd.DataFrame(features, columns=self.expected_feature_order).fillna(0))
                     preds = fine_tuned_model.predict(X_test, num_iteration=fine_tuned_model.best_iteration)
-                    
-                    if subject_id == debug_subject_id:
-                        self._log_message(f"  Prediction Result: {np.mean(preds):.4f}")
-                    
                     y_true_agg.append(y_true); y_pred_agg.append(np.mean(preds))
-
                 if not y_true_agg: continue
-                
-                mard = calculate_mard(y_true_agg, y_pred_agg)
-                rmse = np.sqrt(mean_squared_error(y_true_agg, y_pred_agg))
-                mae = mean_absolute_error(y_true_agg, y_pred_agg)
-                
+                mard, rmse, mae = calculate_mard(y_true_agg, y_pred_agg), np.sqrt(mean_squared_error(y_true_agg, y_pred_agg)), mean_absolute_error(y_true_agg, y_pred_agg)
                 final_results.append([approach, f"{mard:.2f}", f"{rmse:.2f}", f"{mae:.2f}"])
             
-            # === Phase 5: Aggregate results and update GUI with specific order ===
             self._log_message("\n--- Final Results on Unseen Data ---")
             display_order = {name: i for i, name in enumerate(approaches_to_test)}
             sorted_results = sorted(final_results, key=lambda r: display_order.get(r[0], 99))
+            
+            # --- FIX: SAVE THE FINAL AGGREGATED RESULTS TO A CSV ---
+            results_df = pd.DataFrame(sorted_results, columns=self.results_cols)
+            results_log_path = os.path.join(self.output_dir, "fine_tuned_aggregated_results.csv")
+            results_df.to_csv(results_log_path, index=False)
+            self._log_message(f"Final aggregated results saved to: {results_log_path}")
+            # --- END OF FIX ---
+
             self.root.after(0, self._update_results_display, sorted_results)
             
             self._log_message("Saving the fine-tuned model...")
-            model_filename = f"lgbm_model_finetuned_on_{master_df['subject_id'].nunique()}subjects.txt"
+            model_filename = f"lgbm_model_finetuned_on_{master_df['subject_id'].nunique()}subjects_ALL_FINGERS.txt"
             model_save_path = os.path.join(self.output_dir, model_filename)
             fine_tuned_model.save_model(model_save_path)
             self._log_message(f"Model saved to: {model_save_path}")
@@ -359,7 +328,7 @@ if __name__ == '__main__':
     if not SCRIPTS_LOADED_SUCCESSFULLY:
         root = tk.Tk()
         root.withdraw()
-        messagebox.showerror("Initialization Error", "Failed to load critical modules from the Mendeley project directory. Please check file paths and dependencies.")
+        messagebox.showerror("Initialization Error", "Failed to load critical modules from the Mendeley project directory.")
     else:
         root = ThemedTk(theme="arc")
         app = FineTunerApp(root)
