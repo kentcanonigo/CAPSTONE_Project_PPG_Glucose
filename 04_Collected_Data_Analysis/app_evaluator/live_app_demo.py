@@ -520,16 +520,4 @@ if __name__ == '__main__':
     else:
         themed_root = ThemedTk(theme="arc")
         app = LiveDemoApp(themed_root)
-        themed_root.mainloop()self.root.update_idletasks()
-        self.root.deiconify()
-        width, height = self.root.winfo_width(), self.root.winfo_height()
-        x, y = (self.root.winfo_screenwidth() - width) // 2, (self.root.winfo_screenheight() - height) // 2
-        self.root.geometry(f'{width}x{height}+{x}+{y}')
-
-if __name__ == '__main__':
-    if not SCRIPTS_LOADED:
-        print("\nCould not start the app because the required processing scripts were not found.")
-    else:
-        themed_root = ThemedTk(theme="arc")
-        app = LiveDemoApp(themed_root)
         themed_root.mainloop()
