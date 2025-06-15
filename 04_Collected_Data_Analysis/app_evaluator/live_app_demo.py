@@ -91,9 +91,10 @@ class LiveDemoApp:
         self.mendeley_models_dir = os.path.join(project_root_dir, "02_Machine_Learning_Mendeley", "src", "models")
         self.demo_data_dir = os.path.join(project_root_dir, "04_Collected_Data_Analysis", "Collected_Data", "RawData")
         
-        # --- Model Asset Paths ---
-        self.model_path = os.path.join(self.models_dir, "lgbm_model_finetuned_on_20subjects_ALL_FINGERS.txt")
-        self.scaler_path = os.path.join(self.mendeley_models_dir, "mendeley_feature_scaler_retrained_v1.pkl")
+# --- Model Asset Paths ---
+        # UPDATED to use the new model and scaler trained from scratch
+        self.model_path = os.path.join(self.models_dir, "lgbm_model_from_scratch.txt")
+        self.scaler_path = os.path.join(self.models_dir, "scaler_from_scratch.pkl")
         self.features_path = os.path.join(self.mendeley_models_dir, "model_features_retrained_v1.json")
 
         # --- State Variables ---

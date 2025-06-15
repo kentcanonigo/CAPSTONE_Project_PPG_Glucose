@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import os
 import sys
+import json
 import threading
 from datetime import datetime
 import joblib
@@ -196,19 +197,41 @@ class BatchEvaluatorApp:
             self._log_message("ERROR: Cannot load model. Core processing scripts failed to import.")
             return
         try:
-            model_name = "lgbm_glucose_model_retrained_v1.txt"
-            scaler_name = "mendeley_feature_scaler_retrained_v1.pkl"
+            self._log_message("Loading model and scaler trained from scratch...")
+
+            # Directory where the new model/scaler are saved
+            artifacts_dir = os.path.join(self.project_root, "04_Collected_Data_Analysis", "evaluation_results")
+
+            # Names of the new model and scaler files
+            model_name = "lgbm_model_from_scratch.txt"
+            scaler_name = "scaler_from_scratch.pkl"
+            
+            # The feature order file is still in the original Mendeley directory
             features_name = "model_features_retrained_v1.json"
-            self.model, self.scaler, self.expected_feature_order = model_trainer_mendeley.load_model_scaler_and_features(
-                self.mendeley_model_dir, model_name, scaler_name, features_name
-            )
+
+            # Load the new model from the correct directory
+            model_path = os.path.join(artifacts_dir, model_name)
+            self.model = lgb.Booster(model_file=model_path)
+            
+            # Load the new scaler from the correct directory
+            scaler_path = os.path.join(artifacts_dir, scaler_name)
+            with open(scaler_path, 'rb') as f:
+                self.scaler = joblib.load(f)
+
+            # Load the feature order (this path is unchanged)
+            features_path = os.path.join(self.mendeley_model_dir, features_name)
+            with open(features_path, 'r') as f:
+                self.expected_feature_order = json.load(f)
+
             if self.model and self.scaler:
-                self._log_message("Successfully loaded pre-trained model and scaler.")
+                self._log_message("Successfully loaded model and scaler trained from scratch.")
             else:
-                raise FileNotFoundError("Model or scaler not found in the specified directory.")
+                raise FileNotFoundError("Could not find the model or scaler from scratch.")
         except Exception as e:
-            self._log_message(f"CRITICAL ERROR loading artifacts: {e}")
-            messagebox.showerror("Model Load Error", f"Failed to load artifacts from '{self.mendeley_model_dir}'.\n\nError: {e}")
+            import traceback
+            error_msg = f"CRITICAL ERROR loading artifacts: {e}\n{traceback.format_exc()}"
+            self._log_message(error_msg)
+            messagebox.showerror("Model Load Error", f"Failed to load artifacts.\n\nError: {e}")
 
     def _select_folder(self):
         initial_dir = os.path.join(self.project_root, "04_Collected_Data_Analysis")
@@ -268,22 +291,42 @@ class BatchEvaluatorApp:
                 fused_snr = fuse_features_snr_weighted(all_features_scaled, all_segments, config_mendeley.TARGET_FS)
                 fused_sqi = fuse_features_sqi_selected(all_features_scaled, all_segments, config_mendeley.TARGET_FS)
 
-                def get_metrics(features):
-                    # FIX: Use an explicit check for non-empty lists/arrays
-                    if features is None or len(features) == 0:
+                def get_metrics(feature_vector, actual_glucose_val):
+                    if feature_vector is None or feature_vector.size == 0:
                         return [np.nan] * 4
-                    preds = self.model.predict(features)
-                    avg_pred = np.mean(preds)
-                    mard = np.mean(np.abs(preds - actual_glucose) / actual_glucose) * 100
-                    rmse = np.sqrt(mean_squared_error([actual_glucose] * len(preds), preds))
-                    mae = mean_absolute_error([actual_glucose] * len(preds), preds)
-                    return [avg_pred, mard, rmse, mae]
+                    
+                    self._log_message(f"DEBUG: Input features to model: {feature_vector[:5]}") # Log first 5 features
 
-                approaches = ["Index Finger", "Middle Finger", "Ring Finger", "SNR-Weighted Fusion", "SQI-Selected Fusion"]
-                features_sets = all_features_scaled + [fused_snr, fused_sqi]
+                    # Reshape for a single prediction and predict
+                    prediction = self.model.predict(feature_vector.reshape(1, -1))[0]
+                    
+                    # Calculate metrics based on the single prediction
+                    mard = (np.abs(prediction - actual_glucose_val) / actual_glucose_val) * 100
+                    rmse = np.sqrt(mean_squared_error([actual_glucose_val], [prediction]))
+                    mae = mean_absolute_error([actual_glucose_val], [prediction])
+                    
+                    return [prediction, mard, rmse, mae]
 
-                for i, approach in enumerate(approaches):
-                    pred_glucose, mard, rmse, mae = get_metrics(features_sets[i])
+                # Define approaches and corresponding feature sets
+                approaches = {
+                    "Index Finger": all_features_scaled[0],
+                    "Middle Finger": all_features_scaled[1],
+                    "Ring Finger": all_features_scaled[2],
+                    "SNR-Weighted Fusion": fused_snr,
+                    "SQI-Selected Fusion": fused_sqi
+                }
+
+                for approach, features in approaches.items():
+                    # Check if features were successfully generated
+                    if features is None or len(features) == 0:
+                        pred_glucose, mard, rmse, mae = np.nan, np.nan, np.nan, np.nan
+                    else:
+                        # Average the features across all segments into a single vector
+                        avg_feature_vector = np.mean(np.array(features), axis=0)
+                        
+                        # Get metrics using the single averaged feature vector
+                        pred_glucose, mard, rmse, mae = get_metrics(avg_feature_vector, actual_glucose)
+
                     detailed_results.append({
                         "SampleID": sample_id, "Approach": approach, "ActualGlucose": actual_glucose,
                         "PredictedGlucose": pred_glucose, "mARD(%)": mard, "RMSE(mg/dL)": rmse, "MAE(mg/dL)": mae
